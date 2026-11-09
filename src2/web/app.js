@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-09-2782";
+var APPJS_VER = "2026-11-09-2785";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -150,6 +150,119 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   function rxEsc(s) {
     return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
+  /* ---------- Markdown 渲染（常用子集） ----------
+     顺序很重要：先整段转义，再把 ``` 围栏块 / `行内代码` 抽成占位符，
+     否则里面的 * _ # > 会被后面的大胆/斜体/块级规则吃掉。
+     支持：# 标题 1-6、**粗** __粗__、*斜* _斜_、~~删除~~、`代码`、
+           ```围栏代码块```、> 引用、- / * / + 无序、1. 有序、
+           - [ ] / - [x] 任务项、--- 分隔线、[文字](http…) 链接。
+     搜索态（query 非空）仍然走 hlText 的纯文本高亮 —— 高亮要按字符定位，
+     套在解析后的 HTML 上会错位。 */
+  function mdHtml(t) {
+    var stash = [];
+    function keep(html) {
+      var k = "\u0000" + stash.length + "\u0000";
+      stash.push(html);
+      return k;
+    }
+    var s = esc(t == null ? "" : t);
+
+    // 1) 围栏代码块
+    s = s.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, function (m, lang, code) {
+      var body = code.replace(/\n$/, "");
+      return keep('<pre class="md-pre"><code>' + body + "</code></pre>");
+    });
+    // 2) 行内代码
+    s = s.replace(/`([^`\n]+)`/g, function (m, c) {
+      return keep('<code class="md-inline">' + c + "</code>");
+    });
+
+    function inline(x) {
+      return x
+        .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+        .replace(/__([^_\n]+)__/g, "<b>$1</b>")
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
+        .replace(/(^|[^_])_([^_\n]+)_/g, "$1<i>$2</i>")
+        .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
+        .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+          '<a class="md-a" data-href="$2" title="$2">$1</a>');
+    }
+
+    var lines = s.split("\n");
+    var out = [], list = null, buf = [];
+    function closeList() {
+      if (!list) return;
+      var tag = list.task ? "ul" : list.tag;
+      out.push("<" + tag + ' class="' + (list.task ? "md-tasks" : "md-list") + '">' +
+        list.items.join("") + "</" + tag + ">");
+      list = null;
+    }
+    function flushPara() {
+      if (!buf.length) return;
+      out.push("<p>" + buf.join("<br>") + "</p>");
+      buf = [];
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i].replace(/\s+$/, "");
+      if (!ln.trim()) { flushPara(); closeList(); continue; }
+
+      // 单独占一行的代码块占位符：必须当块级元素直接输出。
+      // 塞进 <p> 里的话浏览器会自动闭合 <p>，留下一个空段落带 margin，块之间凭空多一条空隙。
+      var mph = /^\u0000(\d+)\u0000$/.exec(ln.trim());
+      if (mph) { flushPara(); closeList(); out.push(stash[+mph[1]] || ""); continue; }
+
+      var mh = /^(#{1,6})\s+(.*)$/.exec(ln);
+      if (mh) {
+        flushPara(); closeList();
+        var lv = mh[1].length;
+        out.push("<h" + lv + ' class="md-h">' + inline(mh[2]) + "</h" + lv + ">");
+        continue;
+      }
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(ln.trim())) {
+        flushPara(); closeList();
+        out.push('<hr class="md-hr">');
+        continue;
+      }
+      var mq = /^&gt;\s?(.*)$/.exec(ln);
+      if (mq) {
+        flushPara(); closeList();
+        out.push('<blockquote class="md-q">' + inline(mq[1]) + "</blockquote>");
+        continue;
+      }
+      var mt = /^[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(ln);
+      if (mt) {
+        flushPara();
+        if (!list || !list.task) { closeList(); list = { tag: "ul", task: true, items: [] }; }
+        var done = mt[1] !== " ";
+        list.items.push('<li class="md-task' + (done ? " done" : "") + '">' +
+          '<i class="md-box">' + (done ? "✓" : "") + "</i><span>" + inline(mt[2]) + "</span></li>");
+        continue;
+      }
+      var mu = /^[-*+]\s+(.*)$/.exec(ln);
+      if (mu) {
+        flushPara();
+        if (!list || list.task || list.tag !== "ul") { closeList(); list = { tag: "ul", task: false, items: [] }; }
+        list.items.push("<li>" + inline(mu[1]) + "</li>");
+        continue;
+      }
+      var mo = /^(\d+)[.)]\s+(.*)$/.exec(ln);
+      if (mo) {
+        flushPara();
+        if (!list || list.tag !== "ol") { closeList(); list = { tag: "ol", task: false, items: [] }; }
+        list.items.push("<li>" + inline(mo[2]) + "</li>");
+        continue;
+      }
+      closeList();
+      buf.push(inline(ln));
+    }
+    flushPara(); closeList();
+
+    var html = out.join("");
+    html = html.replace(/\u0000(\d+)\u0000/g, function (m, idx) { return stash[+idx] || ""; });
+    return html;
+  }
+
   function hlText(t, q) {
     var terms = String(q == null ? "" : q).trim().split(/\s+/)
       .filter(function (x, i, arr) { return x && arr.indexOf(x) === i; })
@@ -1467,7 +1580,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
                    '<path d="M3.2 12.2h9.6v1.4H3.2z"/></svg>' +
                  '</div>') +
                '<div class="body">' +
-                 '<div class="text" data-act="text">' + hlText(n.text, query) + '</div>' + atts +
+                 '<div class="text' + (query ? "" : " md") + '" data-act="text">' +
+                   (query ? hlText(n.text, query) : mdHtml(n.text)) + '</div>' + atts +
                  '<div class="foot">' +
                    '<span class="upd">' + fmtStamp(n.updated) + '</span>' +
                    '<div class="acts"><span class="made">建 ' + fmtStamp(n.created) + '</span>' +
@@ -1747,6 +1861,17 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
           e.stopPropagation();
         }, true);
       }
+
+      // Markdown 链接：点开用系统默认浏览器，绝不能让 WebView2 自己导航
+      //（那会把整个笔记界面导航走，等于白屏）。
+      card.querySelectorAll(".md-a").forEach(function (a) {
+        a.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var h = a.getAttribute("data-href") || "";
+          if (h) send("openurl|" + encodeURIComponent(h));
+        }, true);
+      });
 
       card.querySelectorAll("[data-act]").forEach(function (el) {
         el.addEventListener("click", function (e) {
@@ -2075,6 +2200,10 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     if (!textEl) return;
 
     editingId = id;
+    // 编辑态显示 **原始 Markdown 源**（不是渲染后的 HTML）：
+    // 直接把 contenteditable 挂在渲染结果上，保存时 innerText 会丢掉 # * ` 这些标记。
+    textEl.classList.remove("md");
+    textEl.textContent = (find(id) || {}).text || "";
     textEl.setAttribute("contenteditable", "true");
     textEl.focus();
     var r = document.createRange();
@@ -2085,12 +2214,17 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       if (editingId !== id) return;
       editingId = null;
       textEl.removeAttribute("contenteditable");
-      var nt = textEl.innerText.replace(/\u00a0/g, " ").trim();
+      var nt = textEl.innerText.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n").trim();
       var n = find(id);
       if (commit && n && nt !== n.text) {
         n.text = nt;
-        send("update|" + id + "|" + nt.replace(/\r?\n/g, "\\n"));
-      } else if (n) textEl.innerText = n.text;
+        // encodeURIComponent 而不是自己转义 \n：文本里可能有 |（MD 表格）、反斜杠、
+        // 引号，Split('|') 会把它撕开，转义序列 C# 侧也不会还原。
+        send("update|" + id + "|" + encodeURIComponent(nt));
+      }
+      // 退出编辑都要回到渲染态（提交后 C# 会推一次全量，这一句保证「不提交」也复原）
+      textEl.classList.add("md");
+      if (n) textEl.innerHTML = mdHtml(n.text);
     };
     textEl.addEventListener("blur", function () { finish(true); }, { once: true });
     textEl.addEventListener("keydown", function (e) {
@@ -2233,7 +2367,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         var _cbox = document.querySelector(".composer-box") || inputEl;
         var _cr = _cbox ? _cbox.getBoundingClientRect() : null;
         _addPending = _cr ? { top: _cr.top, left: _cr.left, w: _cr.width } : true;
-        send("add|" + v.replace(/\r?\n/g, "\\n"));
+        send("add|" + encodeURIComponent(v));
         inputEl.value = ""; query = "";
         inputEl.style.height = "auto";
         syncComposerClear();

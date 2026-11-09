@@ -173,19 +173,20 @@ namespace TempNotes2
                         break;
 
                     case "add":
-                        _store.AddNote(p.Length > 1 ? p[1] : "", "");
+                        // add|<urlencoded 文本> —— 用 encodeURIComponent，文本里的 | 与换行都能过
+                        _store.AddNote(p.Length > 1 ? Uri.UnescapeDataString(p[1]) : "", "");
                         _store.Save();
                         PushAll();
                         break;
 
                     case "update":
-                        // update|id|新文本
+                        // update|id|<urlencoded 新文本>
                         if (p.Length > 2)
                         {
                             var n = Find(p[1]);
                             if (n != null)
                             {
-                                n.Text = p[2];
+                                n.Text = Uri.UnescapeDataString(p[2]);
                                 _store.Touch(n); _store.Save(); PushAll();
                                 // 页面只在「编辑结束（失焦 / Ctrl+Enter）」时发一次 update，
                                 // 所以这里文字为空就是真的清空了 —— 直接判空，不用定时器兜。
@@ -430,6 +431,11 @@ namespace TempNotes2
                     case "open":
                         // open|附件id —— 用系统默认程序打开
                         if (p.Length > 1) OpenAttachment(p[1]);
+                        break;
+
+                    case "openurl":
+                        // openurl|<urlencoded 链接> —— 笔记里的 Markdown 链接，用默认浏览器打开
+                        if (p.Length > 1) OpenUrl(Uri.UnescapeDataString(p[1]));
                         break;
 
                     case "copyfile":
@@ -1751,6 +1757,23 @@ namespace TempNotes2
             var a = FindAtt(attId);
             if (a == null || string.IsNullOrEmpty(a.StoredPath)) return;
             try { System.Diagnostics.Process.Start(a.StoredPath); } catch { }
+        }
+
+        /// <summary>用默认浏览器打开笔记里的 Markdown 链接。只放行 http/https/mailto，
+        /// 其它协议（file:、javascript: 等）一律忽略 —— 页面传来的内容不能当命令入口。</summary>
+        private void OpenUrl(string url)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(url)) return;
+                var u = url.Trim();
+                bool ok = u.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                       || u.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                       || u.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase);
+                if (!ok) { _log("拒绝打开非 http(s) 链接: " + u); return; }
+                System.Diagnostics.Process.Start(u);
+            }
+            catch (Exception ex) { _log("打开链接失败 " + ex.Message); }
         }
 
         private void RevealAttachment(string attId)

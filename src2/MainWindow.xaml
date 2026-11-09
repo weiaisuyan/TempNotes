@@ -131,6 +131,14 @@
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                             VerticalAlignment="Center" Margin="0,0,4,0">
                     <!-- 批量编辑挪到左侧；回收站挪进设置面板 -->
+                    <Button x:Name="BtnGuide" Style="{StaticResource TBtn}" ToolTip="Markdown 语法速查"
+                            Width="22" Height="22" VerticalContentAlignment="Center"
+                            shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="BtnGuide_Click">
+                        <Path Style="{StaticResource IconPath}" Width="13" Height="13"
+                              RenderTransform="1,0,0,1,0,1.5"
+                              Data="M4.3,2.7 H9.9 L12.3,5.1 V13.3 H4.3 Z M9.9,2.7 V5.1 H12.3 M6.2,7.7 H10.4 M6.2,9.9 H10.4"/>
+                    </Button>
+
                     <Button x:Name="BtnSettings" Style="{StaticResource TBtn}" ToolTip="设置"
                             Width="22" Height="22" VerticalContentAlignment="Center"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="BtnSettings_Click">

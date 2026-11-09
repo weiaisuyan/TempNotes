@@ -471,6 +471,18 @@ namespace TempNotes2
         private void BtnTrash_Click(object sender, RoutedEventArgs e) { Eval("window.api.openTrash && window.api.openTrash();"); }
         private void BtnSettings_Click(object sender, RoutedEventArgs e) { Eval("window.api.openSettings && window.api.openSettings();"); }
 
+        /// <summary>标题栏「语法速查」：用系统默认浏览器打开本地的 md-guide.html。</summary>
+        private void BtnGuide_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string p = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web", "md-guide.html");
+                if (!System.IO.File.Exists(p)) { LogMsg("找不到语法速查页面: " + p); return; }
+                System.Diagnostics.Process.Start(p);
+            }
+            catch (Exception ex) { LogMsg("打开语法速查失败 " + ex.Message); }
+        }
+
         private void BtnMin_Click(object sender, RoutedEventArgs e) { SystemCommands.MinimizeWindow(this); }
 
         private void BtnMax_Click(object sender, RoutedEventArgs e)

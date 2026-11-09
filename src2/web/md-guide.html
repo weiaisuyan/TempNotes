@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>随记 · Markdown 速查</title>
+<style>
+  :root{
+    --bg:#0c0f11;
+    --bg2:#11161a;
+    --card:rgba(255,255,255,.045);
+    --card2:rgba(255,255,255,.028);
+    --line:rgba(255,255,255,.085);
+    --line2:rgba(255,255,255,.14);
+    --text:#e9efee;
+    --muted:#93a2a6;
+    --faint:#879499;
+    --accent:#57c9a0;
+    --accent2:#7fd7ff;
+    --warn:#e8b86d;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:
+      radial-gradient(1100px 620px at 12% -8%,rgba(87,201,160,.10),transparent 62%),
+      radial-gradient(900px 520px at 92% 4%,rgba(127,215,255,.075),transparent 60%),
+      var(--bg);
+    color:var(--text);
+    font:15px/1.68 var(--sans);
+    -webkit-font-smoothing:antialiased;
+    padding-bottom:80px;
+  }
+  a{color:var(--accent2);text-decoration:none}
+
+  /* ---------- 顶部 ---------- */
+  .hero{
+    position:relative;
+    padding:64px 32px 40px;
+    max-width:1080px;margin:0 auto;
+  }
+  .kicker{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);margin-bottom:18px;
+  }
+  .kicker i{width:6px;height:6px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 0 4px rgba(87,201,160,.14)}
+  h1{
+    font-size:clamp(30px,4.4vw,44px);
+    line-height:1.18;font-weight:700;letter-spacing:-.02em;
+    background:linear-gradient(96deg,#ffffff 8%,#b9e8d8 42%,#8ed0e8 82%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .sub{margin-top:14px;max-width:60ch;color:var(--muted);font-size:15.5px}
+  .sub b{color:var(--text);font-weight:600}
+
+  /* ---------- 布局 ---------- */
+  .wrap{max-width:1080px;margin:0 auto;padding:0 32px;
+    display:grid;grid-template-columns:196px minmax(0,1fr);gap:44px;align-items:start}
+  @media (max-width:860px){
+    .wrap{grid-template-columns:1fr;gap:24px}
+    .toc{position:static !important;order:-1}
+  }
+
+  /* ---------- 侧栏 ---------- */
+  .toc{position:sticky;top:28px;font-size:13.5px}
+  .toc .t{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--faint);margin:0 0 12px 12px}
+  .toc a{
+    display:block;padding:6px 12px;border-radius:8px;color:var(--muted);
+    border-left:2px solid transparent;transition:.16s;
+  }
+  .toc a:hover{color:var(--text);background:var(--card2)}
+  .toc a.on{color:var(--text);border-left-color:var(--accent);
+    background:linear-gradient(90deg,rgba(87,201,160,.12),transparent)}
+
+  /* ---------- 章节 ---------- */
+  section{margin-bottom:34px;scroll-margin-top:24px}
+  .shead{display:flex;align-items:baseline;gap:12px;margin-bottom:14px}
+  .shead h2{font-size:17px;font-weight:650;letter-spacing:-.01em}
+  .shead .n{font:600 12px/1 var(--mono);color:var(--accent);
+    background:rgba(87,201,160,.12);border:1px solid rgba(87,201,160,.22);
+    padding:4px 7px;border-radius:6px}
+  .shead .hint{color:var(--faint);font-size:12.5px;margin-left:auto}
+
+  /* ---------- 卡片 ---------- */
+  .grid{display:grid;gap:12px}
+  .row2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+  .item{
+    background:linear-gradient(180deg,var(--card),var(--card2));
+    border:1px solid var(--line);border-radius:14px;
+    padding:15px 16px 16px;
+    transition:border-color .18s,transform .18s,box-shadow .18s;
+  }
+  .item:hover{border-color:var(--line2);transform:translateY(-1px);
+    box-shadow:0 10px 26px -18px rgba(0,0,0,.9)}
+  .item .name{display:flex;align-items:center;gap:8px;font-size:13px;
+    color:var(--muted);margin-bottom:10px}
+  .item .name code{
+    font:500 12px/1 var(--mono);color:var(--accent);
+    background:rgba(87,201,160,.10);border-radius:5px;padding:3px 6px}
+  .item .name .why{margin-left:auto;font-size:11.5px;color:var(--muted)}
+
+  /* 源码块 */
+  pre.src{
+    font:400 12.5px/1.62 var(--mono);
+    background:rgba(0,0,0,.42);
+    border:1px solid rgba(255,255,255,.06);
+    border-radius:9px;padding:10px 12px;
+    overflow-x:auto;color:#c8d6d2;white-space:pre;
+  }
+  pre.src .sym{color:#8fd8bf}
+  pre.src .cmt{color:#5f6f74}
+
+  /* 渲染示例 */
+  .demo{
+    margin-top:11px;padding:11px 13px;border-radius:9px;
+    background:rgba(255,255,255,.026);
+    border:1px dashed rgba(255,255,255,.09);
+    font-size:14.5px;
+  }
+  .demo .lbl{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:7px}
+  .demo p{margin:0 0 .4em}
+  .demo p:last-child{margin-bottom:0}
+  .demo .h1{font-size:1.34em;font-weight:650;line-height:1.3}
+  .demo .h2{font-size:1.2em;font-weight:650;line-height:1.32}
+  .demo .h3{font-size:1.08em;font-weight:650;line-height:1.34}
+  .demo .h4{font-size:1.0em;font-weight:650;color:var(--muted)}
+  .demo b{font-weight:650}
+  .demo i{font-style:italic;color:#dfe9e7}
+  .demo del{opacity:.55}
+  .demo code.inl{font:400 .9em/1.4 var(--mono);
+    background:rgba(255,255,255,.09);border-radius:4px;padding:.06em .34em}
+  .demo .codeblk{
+    font:400 12.5px/1.55 var(--mono);white-space:pre;overflow-x:auto;
+    background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.06);
+    border-radius:7px;padding:9px 11px;color:#c8d6d2}
+  .demo ul,.demo ol{margin:.15em 0 .3em;padding-left:1.3em}
+  .demo li{margin:.1em 0}
+  .demo .tasks{list-style:none;padding-left:0}
+  .demo .task{display:flex;gap:.45em;align-items:flex-start;margin:.14em 0}
+  .demo .box{flex:0 0 auto;width:1.02em;height:1.02em;margin-top:.24em;
+    border:1.4px solid rgba(233,239,238,.34);border-radius:4px;
+    font-size:.72em;line-height:1;display:inline-flex;align-items:center;
+    justify-content:center;color:var(--accent)}
+  .demo .task.done .box{border-color:rgba(87,201,160,.55);
+    background:rgba(87,201,160,.20)}
+  .demo .task.done span{opacity:.5;text-decoration:line-through}
+  .demo blockquote{margin:.2em 0;padding:.1em 0 .1em .7em;
+    border-left:2px solid rgba(87,201,160,.45);color:var(--muted)}
+  .demo hr{border:0;border-top:1px solid var(--line2);margin:.6em 0}
+  .demo .lk{color:var(--accent2);
+    border-bottom:1px solid rgba(127,215,255,.4)}
+  .demo table{border-collapse:collapse;font-size:13px}
+  .demo th,.demo td{border:1px solid var(--line2);padding:4px 9px;text-align:left}
+  .demo th{background:rgba(255,255,255,.05);font-weight:600}
+
+  /* 提示条 */
+  .note{
+    display:flex;gap:10px;align-items:flex-start;
+    background:linear-gradient(90deg,rgba(232,184,109,.10),rgba(232,184,109,.02));
+    border:1px solid rgba(232,184,109,.24);border-radius:12px;
+    padding:12px 14px;margin:16px 0 26px;font-size:13.5px;color:#f2e9d9;
+  }
+  .note .ic{flex:0 0 auto;color:var(--warn);font-weight:700}
+  .note b{color:#f2e6d2}
+
+  /* 组合示例 */
+  .combo{
+    background:linear-gradient(180deg,rgba(87,201,160,.055),rgba(127,215,255,.03));
+    border:1px solid rgba(87,201,160,.2);border-radius:16px;padding:18px 18px 20px;
+  }
+  .combo pre.src{background:rgba(0,0,0,.5)}
+  .combo .arrow{text-align:center;color:var(--faint);font-size:12px;
+    letter-spacing:.2em;margin:12px 0 10px}
+  .combo .out{background:rgba(255,255,255,.035);border:1px solid var(--line);
+    border-radius:11px;padding:14px 16px}
+
+  footer{
+    max-width:1080px;margin:40px auto 0;padding:22px 32px 0;
+    border-top:1px solid var(--line);color:var(--faint);font-size:12.5px;
+    display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;
+  }
+
+  /* 复制按钮 */
+  .cp{
+    float:right;font:500 11px/1 var(--sans);color:var(--faint);
+    background:rgba(255,255,255,.05);border:1px solid var(--line);
+    border-radius:6px;padding:4px 8px;cursor:pointer;margin:-2px 0 0 8px;
+    transition:.16s;
+  }
+  .cp:hover{color:var(--text);border-color:var(--line2);
+    background:rgba(255,255,255,.09)}
+  .cp.ok{color:var(--accent);border-color:rgba(87,201,160,.4)}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="kicker"><i></i>随记 · 语法速查</div>
+  <h1>把你的待办写成一张<br>能看懂的小文档</h1>
+  <p class="sub">随记的笔记正文支持一套<b>常用 Markdown</b>：标题、清单、勾选框、代码、引用、链接。
+     在新建框里直接写标记，回车之后卡片就会自动排版。</p>
+</header>
+
+<div class="wrap">
+
+  <nav class="toc">
+    <p class="t">目录</p>
+    <a href="#how">怎么用</a>
+    <a href="#basic">基础强调</a>
+    <a href="#head">标题</a>
+    <a href="#list">列表</a>
+    <a href="#task">勾选框</a>
+    <a href="#code">代码</a>
+    <a href="#quote">引用 / 分隔</a>
+    <a href="#link">链接</a>
+    <a href="#combo">组合示例</a>
+    <a href="#limit">不支持的写法</a>
+  </nav>
+
+  <main>
+
+    <section id="how">
+      <div class="shead"><span class="n">01</span><h2>怎么用</h2><span class="hint">三个状态，各管一件事</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code>新建输入框</code><span class="why">写源码</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">直接在顶部输入框打标记，包括换行。按 <b>Enter</b> 建卡，卡片里立刻变成排版效果。</p>
+        </div>
+        <div class="item">
+          <div class="name"><code>卡片显示</code><span class="why">看效果</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">渲染成富文本，链接可以直接点（用系统浏览器打开）。长内容最多显示 15 行。</p>
+        </div>
+        <div class="item">
+          <div class="name"><code>点「编辑」</code><span class="why">看源码</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">编辑时显示的是<b>原始标记</b>，不是排版结果。改完失焦或 <b>Ctrl+Enter</b> 保存，又变回排版。</p>
+        </div>
+        <div class="item">
+          <div class="name"><code>顶部搜索时</code><span class="why">纯文本</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">搜索状态下卡片回到纯文本 + 关键词高亮，方便按字符定位。清空搜索就恢复排版。</p>
+        </div>
+      </div>
+
+      <div class="note">
+        <span class="ic">!</span>
+        <div><b>为什么编辑时看源码？</b> 因为编辑框里要是显示排版结果，保存时那些 <code style="font:400 12px var(--mono)"># ** `</code> 标记会被吃掉，格式就永久丢了。看源码虽然朴素，但改一个符号不会毁掉整段。</div>
+      </div>
+    </section>
+
+    <section id="basic">
+      <div class="shead"><span class="n">02</span><h2>基础强调</h2><span class="hint">最常用的三个</span></div>
+      <div class="grid row2">
+
+        <div class="item">
+          <div class="name"><code>**粗体**</code><span class="why">也可以用 __粗体__</span></div>
+          <button class="cp" data-c="**重点**">复制</button>
+          <pre class="src">把 **重点** 标出来</pre>
+          <div class="demo"><div class="lbl">效果</div><p>把 <b>重点</b> 标出来</p></div>
+        </div>
+
+        <div class="item">
+          <div class="name"><code>*斜体*</code><span class="why">也可以用 _斜体_</span></div>
+          <button class="cp" data-c="*稍后再说*">复制</button>
+          <pre class="src">这个 *稍后再说*</pre>
+          <div class="demo"><div class="lbl">效果</div><p>这个 <i>稍后再说</i></p></div>
+        </div>
+
+        <div class="item">
+          <div class="name"><code>~~删除线~~</code><span class="why">标记作废</span></div>
+          <button class="cp" data-c="~~打错了~~">复制</button>
+          <pre class="src">这个方案 ~~打错了~~ 已废弃</pre>
+          <div class="demo"><div class="lbl">效果</div><p>这个方案 <del>打错了</del> 已废弃</p></div>
+        </div>
+
+        <div class="item">
+          <div class="name"><code>行内代码</code><span class="why">反引号包起来</span></div>
+          <button class="cp" data-c="按住 `Ctrl+S` 保存">复制</button>
+          <pre class="src">按住 `Ctrl+S` 保存</pre>
+          <div class="demo"><div class="lbl">效果</div><p>按住 <code class="inl">Ctrl+S</code> 保存</p></div>
+        </div>
+
+      </div>
+    </section>
+
+    <section id="head">
+      <div class="shead"><span class="n">03</span><h2>标题</h2><span class="hint"># 越多字越小</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code># 一级标题</code><span class="why">1~6 级都支持</span></div>
+          <pre class="src"># 本周计划
+## 上午
+### 细项</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <div class="h1">本周计划</div>
+            <div class="h2">上午</div>
+            <div class="h3">细项</div>
+          </div>
+        </div>
+        <div class="item">
+          <div class="name"><code>#### 四级及以下</code><span class="why">会变灰，当小标签用</span></div>
+          <pre class="src">#### 备注
+#### 参考</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <div class="h4">备注</div>
+            <div class="h4">参考</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="list">
+      <div class="shead"><span class="n">04</span><h2>列表</h2><span class="hint">- 或 数字. 开头</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code>- 项目</code><span class="why">* 和 + 也行</span></div>
+          <button class="cp" data-c="- 买牛奶
+- 交电费
+- 取快递">复制</button>
+          <pre class="src">- 买牛奶
+- 交电费
+- 取快递</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <ul><li>买牛奶</li><li>交电费</li><li>取快递</li></ul>
+          </div>
+        </div>
+        <div class="item">
+          <div class="name"><code>1. 步骤</code><span class="why">数字后面跟 . 或 )</span></div>
+          <button class="cp" data-c="1. 先备份
+2. 再改配置
+3. 最后重启">复制</button>
+          <pre class="src">1. 先备份
+2. 再改配置
+3. 最后重启</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <ol><li>先备份</li><li>再改配置</li><li>最后重启</li></ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="task">
+      <div class="shead"><span class="n">05</span><h2>勾选框</h2><span class="hint">写清单最好用</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code>- [ ] 未完成</code><span class="why">方括号里是空格</span></div>
+          <button class="cp" data-c="- [ ] 交报表
+- [x] 回邮件">复制</button>
+          <pre class="src">- [ ] 交报表
+- [x] 回邮件</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <ul class="tasks">
+              <li class="task"><i class="box"></i><span>交报表</span></li>
+              <li class="task done"><i class="box">✓</i><span>回邮件</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="item">
+          <div class="name"><code>- [x] 已完成</code><span class="why">x 或 X 都可以</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">已经勾上的项会显示勾号、划线、变淡。它只是<b>正文里的勾选框</b>，和卡片左边那个圆圈的「待办/完成」是两件事。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="code">
+      <div class="shead"><span class="n">06</span><h2>代码</h2><span class="hint">一行用反引号，多行用三个</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code>`一行代码`</code><span class="why">单反引号</span></div>
+          <button class="cp" data-c="执行 `npm run build`">复制</button>
+          <pre class="src">执行 `npm run build`</pre>
+          <div class="demo"><div class="lbl">效果</div><p>执行 <code class="inl">npm run build</code></p></div>
+        </div>
+        <div class="item">
+          <div class="name"><code>``` 代码块 ```</code><span class="why">三个反引号各占一行</span></div>
+          <button class="cp" data-c="```
+const a = 1;
+if (a &lt; 2) run();
+```">复制</button>
+          <pre class="src"><span class="cmt">```</span>
+const a = 1;
+if (a &lt; 2) run();
+<span class="cmt">```</span></pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <div class="codeblk">const a = 1;
+if (a &lt; 2) run();</div>
+          </div>
+        </div>
+      </div>
+      <div class="note"><span class="ic">!</span>
+        <div>代码块里的 <b>* _ # &gt;</b> 不会被当成格式 —— 写得再乱也原样显示。缩进、空格都保留。</div>
+      </div>
+    </section>
+
+    <section id="quote">
+      <div class="shead"><span class="n">07</span><h2>引用与分隔线</h2><span class="hint">一句话的来源 / 段落切分</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code>&gt; 引用</code><span class="why">大于号开头</span></div>
+          <button class="cp" data-c="&gt; 客户说的是「下周再定」">复制</button>
+          <pre class="src">&gt; 客户说的是「下周再定」</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <blockquote>客户说的是「下周再定」</blockquote>
+          </div>
+        </div>
+        <div class="item">
+          <div class="name"><code>---</code><span class="why">三个减号，单独一行</span></div>
+          <button class="cp" data-c="---
+">复制</button>
+          <pre class="src">上面
+---
+下面</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <p>上面</p><hr><p>下面</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="link">
+      <div class="shead"><span class="n">08</span><h2>链接</h2><span class="hint">点一下用浏览器打开</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code>[文字](https://…)</code><span class="why">只认 http / https</span></div>
+          <button class="cp" data-c="参考 [官方文档](https://example.com/doc)">复制</button>
+          <pre class="src">参考 [官方文档](https://example.com/doc)</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <p>参考 <a class="lk" href="#">官方文档</a></p>
+          </div>
+        </div>
+        <div class="item">
+          <div class="name"><code>mailto:</code><span class="why">也能发邮件</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">点链接会用<b>系统默认浏览器</b>打开，不会把随记自己的界面导航走。出于安全，<code style="font:400 12px var(--mono)">file:</code>、<code style="font:400 12px var(--mono)">javascript:</code> 这类协议会被拒绝。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="combo">
+      <div class="shead"><span class="n">09</span><h2>组合示例</h2><span class="hint">把上面的混起来写</span></div>
+      <div class="combo">
+        <button class="cp" data-c="# 周五 11/14
+## 待处理
+- [ ] 交 Q4 报表
+- [x] 回客户邮件
+- [ ] 订下周会议室
+
+## 备注
+&gt; 报表等 **财务** 口径确认后再发
+
+参考：[报销流程](https://example.com/expense)
+---
+预计用时 `40 分钟`">复制</button>
+        <pre class="src"># 周五 11/14
+## 待处理
+- [ ] 交 Q4 报表
+- [x] 回客户邮件
+- [ ] 订下周会议室
+
+## 备注
+&gt; 报表等 **财务** 口径确认后再发
+
+参考：[报销流程](https://example.com/expense)
+---
+预计用时 `40 分钟`</pre>
+        <div class="arrow">↓ &nbsp; 卡片里显示成 &nbsp; ↓</div>
+        <div class="out">
+          <div class="h1">周五 11/14</div>
+          <div class="h2" style="margin-top:.3em">待处理</div>
+          <ul class="tasks">
+            <li class="task"><i class="box"></i><span>交 Q4 报表</span></li>
+            <li class="task done"><i class="box">✓</i><span>回客户邮件</span></li>
+            <li class="task"><i class="box"></i><span>订下周会议室</span></li>
+          </ul>
+          <div class="h2" style="margin-top:.5em">备注</div>
+          <blockquote>报表等 <b>财务</b> 口径确认后再发</blockquote>
+          <p>参考：<a class="lk" href="#">报销流程</a></p>
+          <hr>
+          <p>预计用时 <code class="inl">40 分钟</code></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="limit">
+      <div class="shead"><span class="n">10</span><h2>暂不支持的写法</h2><span class="hint">这些会当普通文字显示</span></div>
+      <div class="grid row2">
+        <div class="item">
+          <div class="name"><code>表格</code><span class="why">暂不解析</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">竖线表格会原样显示成一行文字。需要对齐的内容建议改用列表。</p>
+        </div>
+        <div class="item">
+          <div class="name"><code>图片 {}</code><span class="why">用拖入附件代替</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">正文里的图片语法不会被渲染。想看图，直接把图片文件拖到卡片上 —— 附件区比内联图片更好管理。</p>
+        </div>
+        <div class="item">
+          <div class="name"><code>脚注 / 任务嵌套</code><span class="why">暂不解析</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">列表只支持一层。需要层级就用「标题 + 列表」的组合。</p>
+        </div>
+        <div class="item">
+          <div class="name"><code>&lt;html&gt; 标签</code><span class="why">会被转义</span></div>
+          <p style="font-size:13.5px;color:var(--muted)">所有标签都当文字显示，不会执行 —— 这是安全设计，不是缺陷。</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <span>随记 · Markdown 速查</span>
+  <span>这份页面在本地，随时可从标题栏的书本图标打开</span>
+</footer>
+
+<script>
+  // 目录高亮
+  var links = [].slice.call(document.querySelectorAll('.toc a'));
+  var secs = links.map(function(a){ return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+  function spy(){
+    var y = window.scrollY + 120, cur = null;
+    secs.forEach(function(s, i){ if (s.offsetTop <= y) cur = i; });
+    links.forEach(function(a, i){ a.classList.toggle('on', i === cur); });
+  }
+  window.addEventListener('scroll', spy, {passive:true});
+  spy();
+
+  // 复制按钮
+  document.addEventListener('click', function(e){
+    var b = e.target.closest('.cp');
+    if (!b) return;
+    var txt = b.getAttribute('data-c') || '';
+    var done = function(){
+      b.textContent = '已复制'; b.classList.add('ok');
+      setTimeout(function(){ b.textContent = '复制'; b.classList.remove('ok'); }, 1300);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done, function(){ fallback(txt, done); });
+    } else fallback(txt, done);
+  });
+  function fallback(txt, done){
+    var ta = document.createElement('textarea');
+    ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch(err){}
+    document.body.removeChild(ta);
+  }
+</script>
+</body>
+</html>
