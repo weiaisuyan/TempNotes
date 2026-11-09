@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-09-2781";
+var APPJS_VER = "2026-11-09-2782";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -1064,7 +1064,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   var EDGE_PULSES = [
     { k: "slow", n: "慢", v: "edgePulse 2.4s ease-in-out infinite" },
     { k: "std", n: "标准", v: "edgePulse 1.6s ease-in-out infinite" },
-    { k: "fast", n: "快", v: "edgePulse 1.0s ease-in-out infinite" },
+    { k: "fast", n: "快", v: "edgePulse 0.75s ease-in-out infinite" },
+    { k: "vfast", n: "极快", v: "edgePulse 0.35s ease-in-out infinite" },
     { k: "off", n: "不闪", v: "none" }
   ];
 
@@ -1554,8 +1555,12 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         var d = oldTop.top - c.getBoundingClientRect().top;
         if (Math.abs(d) < 1) return;
         try {
+          // 用 easeOutQuad（和拖动让位同一套手感）。
+          // 以前是 cubic-bezier(.16,1,.3,1) = easeOutExpo：起步就是最高速，
+          // 点击待办圈后卡片跨区飞过去，540ms 里前 130ms 就跑完 80% 距离，
+          // 视觉上就是「嗖一下」（用户 2026-11-09 反馈）。
           c.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }],
-            { duration: 540, easing: "cubic-bezier(.16,1,.3,1)" });
+            { duration: 620, easing: "cubic-bezier(.25,.46,.45,.94)" });
         } catch (e) { }
       });
     }

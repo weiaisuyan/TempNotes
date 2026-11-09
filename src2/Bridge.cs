@@ -212,7 +212,10 @@ namespace TempNotes2
                             {
                                 bool toTodo = (n.Status == 1);
                                 _store.SetStatus(n, toTodo ? 0 : 1);
-                                if (toTodo) SortToTop(n, false);   // 回到未完成 → 排到待办区第一位
+                                // 两边都排到这个区的第一位：刚完成的那条应该出现在已完成区最上面，
+                                // 刚取消完成的回到待办区最上面（用户 2026-11-09 明确要求）。
+                                if (toTodo) SortToTop(n, false);
+                                else SortToTopDone(n);
                                 _store.Save();
                                 PushAll();
                             }
@@ -1682,6 +1685,24 @@ namespace TempNotes2
                     if (x == null || ReferenceEquals(x, n)) continue;
                     if (x.Status != 0) continue;          // 待办区/置顶区都是 status=0
                     if (x.Pinned != pinned) continue;     // 只在同一区里比
+                    long k = x.SortKey;
+                    if (k > max) max = k;
+                }
+                n.Sort = max + 1;
+            }
+            catch { }
+        }
+
+        /// <summary>把一条「已完成」的笔记排到已完成区第一位（列表按 Sort 降序，最大 = 最上面）。</summary>
+        private void SortToTopDone(Note n)
+        {
+            try
+            {
+                long max = 0;
+                foreach (var x in _store.Db.Notes)
+                {
+                    if (x == null || ReferenceEquals(x, n)) continue;
+                    if (x.Status != 1) continue;
                     long k = x.SortKey;
                     if (k > max) max = k;
                 }
