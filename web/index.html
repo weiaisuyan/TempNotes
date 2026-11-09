@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>随记</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div class="composer-area">
+    <div class="composer-wrap">
+      <div class="composer-box">
+        <textarea id="composer" class="composer" rows="1"
+                  placeholder="记点什么…"></textarea>
+        <div class="composer-bar" id="composerBar">
+          <div class="composer-hint" id="composerHint"><kbd>Enter</kbd> 新建</div>
+          <button class="composer-clear" id="composerClear" type="button"
+                  title="清除输入" aria-label="清除输入">清除</button>
+        </div>
+        <div class="cdrop" id="composerDrop" aria-hidden="true"></div>
+      </div>
+    </div>
+    <!-- 批量编辑时占用输入框的位置（输入框隐藏），全选在左，操作在右 -->
+    <div class="batchbar" id="batchbar">
+      <button id="batchAll">全选</button>
+      <span class="spacer"></span>
+      <button id="batchTodo">设待办</button>
+      <button id="batchDone">设已办</button>
+      <button id="batchDel" class="danger">删除</button>
+      <button id="batchExit">退出</button>
+    </div>
+  </div>
+
+  <div class="searchbar" id="searchbar"></div>
+
+  <div class="list-wrap">
+    <div id="list"></div>
+  </div>
+
+  <button class="totop" id="totop" type="button" title="回到顶部"
+          aria-label="回到顶部" tabindex="-1">
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 12.5V3.8 M3.8 8 L8 3.8 L12.2 8"
+            fill="none" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+
+  <button class="totop" id="todone" type="button" title="跳到已完成待办"
+          aria-label="跳到已完成待办" tabindex="-1">
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3.4 8.5 L6.5 11.5 L12.6 4.7"
+            fill="none" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+
+  <div class="edge-glow top"><i></i></div>
+  <div class="edge-glow bottom"><i></i></div>
+
+  <div class="hint" id="hint"></div>
+  <div class="colorpop" id="colorpop"></div>
+
+  <div class="panel" id="settings">
+    <div class="box">
+      <div class="hd"><b>设置</b><span class="x" id="setClose">✕</span></div>
+      <div class="bd">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">配色</div>
+        <div class="palettes" id="palettes"></div>
+        <div class="row" style="margin-top:12px"><span class="k">拖到边界的提示色</span><span class="edgecols" id="edgeColors"></span></div>
+        <div class="row"><span class="k">提示闪烁节奏</span><span class="edgepulse" id="edgePulses"></span></div>
+        <div style="height:14px"></div>
+        <div class="row"><span class="k">窗口置顶</span><span class="switch" id="swTop"><i></i></span></div>
+        <div class="row"><span class="k">开机自启</span><span class="switch" id="swAuto"><i></i></span></div>
+        <div class="row"><span class="k">右键设为已完成</span><span class="switch" id="swRight"><i></i></span></div>
+        <div class="row"><span class="k">回收站</span><span class="go" id="rowTrash">打开 ›</span></div>
+        <div class="row"><span class="k">关闭窗口时收进托盘</span><span class="switch" id="swClose"><i></i></span></div>
+
+        <div class="sep"></div>
+        <div class="secttl">数据目录</div>
+        <div class="dataroot" id="dataRootPath">—</div>
+        <div class="datarow">
+          <button id="btnDataRoot">更改目录…</button>
+          <span class="dsize" id="dataSize">—</span>
+        </div>
+        <div class="row"><span class="k">清理无主附件</span><span class="go" id="rowOrphan">检查 ›</span></div>
+        <div class="datanote">改成 OneDrive 里的文件夹即可跨端同步；换目录会把当前待办<b>移动</b>过去（源目录清空），并与目标目录已有数据按 id 合并去重。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="trashpanel">
+    <div class="box">
+      <div class="hd"><b>回收站</b><span class="thmeta" id="trashMeta"></span><span class="x" id="trashClose">✕</span></div>
+      <div class="bd">
+        <div id="trashlist"></div>
+        <div style="margin-top:12px;text-align:right">
+          <button id="trashEmpty" style="background:transparent;border:1px solid var(--line);color:#e0796f;font:inherit;font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer">清空回收站</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="Sortable.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

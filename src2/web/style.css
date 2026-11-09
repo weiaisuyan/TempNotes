@@ -1,0 +1,1024 @@
+:root{
+  --bg:#060606; --card:#2E3C37; --line:#44574F;
+  --text:#EAF3EF; --muted:#A2B8B0; --accent:#4FBF95;
+  /* 卡片＝一层很淡的白色透明玻璃，叠在背景上；不是实色块 */
+  --card-soft:rgba(255,255,255,.044);
+  --card-hover:rgba(255,255,255,.072);
+  --card-done:rgba(255,255,255,.026);
+  --text-done:color-mix(in srgb, var(--text) 48%, var(--bg));
+  --faint:color-mix(in srgb, var(--muted) 66%, var(--bg));
+  /* 拖到列表边界的提示色（设置里可换，默认暖红 #FF6F61） */
+  --edge-r:255; --edge-g:111; --edge-b:97;
+  /* 提示闪烁节奏：整条 animation 短写，设置里换 慢/标准/快/不闪 */
+  --edge-pulse-anim:edgePulse 1.6s ease-in-out infinite;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background: var(--bg);
+  color:var(--text);
+  font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  font-size:13.5px; overflow:hidden;
+  display:flex; flex-direction:column;
+  user-select:none;
+  transition:background .2s ease;
+}
+
+/* ===== 标题栏（与窗口按钮同一行，整条可拖） ===== */
+.titlebar{
+  flex:0 0 auto; height:36px;
+  display:flex; align-items:center;
+  background:transparent;
+  padding-left:12px;
+}
+.tb-drag{
+  flex:1 1 auto; height:100%;
+  display:flex; align-items:center; gap:8px;
+  cursor:default;
+  min-width:0;
+}
+.app-icon{display:flex;width:18px;height:18px}
+.app-icon svg{width:18px;height:18px;display:block}
+.app-name{
+  font-size:12px; color:color-mix(in srgb, var(--text) 68%, var(--bg));
+  letter-spacing:.2px; white-space:nowrap;
+}
+.tb-actions{display:flex; align-items:center; gap:1px; flex:0 0 auto}
+.tbtn{
+  width:30px;height:30px;border:none;background:transparent;
+  border-radius:7px;display:flex;align-items:center;justify-content:center;
+  color:color-mix(in srgb, var(--text) 72%, var(--bg));
+  cursor:pointer; transition:background .14s ease,color .14s ease;
+}
+.tbtn svg{width:16px;height:16px}
+.tbtn:hover{background:color-mix(in srgb, var(--card) 85%, transparent);color:var(--text)}
+.tbtn.on{color:var(--accent);background:color-mix(in srgb, var(--accent) 14%, transparent)}
+
+.tb-winctl{display:flex; align-items:center; flex:0 0 auto; margin-left:4px}
+.wbtn{
+  width:38px;height:36px;border:none;background:transparent;
+  display:flex;align-items:center;justify-content:center;
+  color:color-mix(in srgb, var(--text) 62%, var(--bg));
+  cursor:pointer; transition:background .13s ease,color .13s ease;
+}
+.wbtn svg{width:12px;height:12px}
+.wbtn:hover{background:color-mix(in srgb, var(--card) 90%, transparent);color:var(--text)}
+.wbtn.close:hover{background:#c4433c;color:#fff}
+
+/* ===== 输入区（宽度对齐卡片） ===== */
+.composer-area{
+  flex:0 0 auto;padding:6px 8px 10px 8px;   /* 原来 左28/右18 不对称；改成左右各 8，居中且更贴边 */
+  /* 必须盖在 .sortable-fallback（position:fixed;z-index:100000）之上，
+     否则被拖的卡片往上跑时会盖住输入框；这里让它从输入区下面滑过去 */
+  position:relative;z-index:100001;background:var(--bg);
+}
+.composer-wrap{
+  position:relative;
+  transition:opacity .16s ease, transform .2s cubic-bezier(.22,1,.36,1), visibility .2s;
+}
+/* 进批量：输入框原地淡出并微微上移，批量条在同一位置接上（高度不变，列表不跳） */
+body.batch .composer-wrap{
+  opacity:0;visibility:hidden;pointer-events:none;
+  transform:translateY(-6px) scale(.995);
+}
+.composer-box{
+  background:color-mix(in srgb, var(--card) 55%, transparent);
+  border:1px solid var(--line); border-radius:10px;
+  transition:border-color .16s ease, background .16s ease;
+}
+.composer-box:focus-within{
+  border-color:color-mix(in srgb, var(--accent) 48%, transparent);
+  background:color-mix(in srgb, var(--card) 74%, transparent);
+}
+.composer{
+  display:block; width:100%;
+  background:transparent; border:0; border-radius:10px;
+  padding:12px 13px 6px; color:var(--text); font:inherit;
+  outline:none; resize:none;
+  min-height:46px; max-height:220px;
+  line-height:1.55;
+}
+.composer{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--text) 22%,transparent) transparent}
+.composer::-webkit-scrollbar{width:6px;height:6px}
+.composer::-webkit-scrollbar-track{background:transparent;margin:5px 0}
+.composer::-webkit-scrollbar-thumb{
+  background:color-mix(in srgb,var(--text) 20%,transparent);
+  border-radius:999px;border:1.5px solid transparent;background-clip:padding-box;
+  min-height:30px;
+}
+.composer::-webkit-scrollbar-thumb:hover{
+  background:color-mix(in srgb,var(--text) 34%,transparent);
+  background-clip:padding-box;
+}
+.composer::placeholder{color:var(--faint)}
+
+/* 第二行：有文字才展开（高度 0 → 30px，和整窗动画同一条曲线）。
+   左：Enter 新建提示；右：清除。输入框本体只占第一行。 */
+.composer-bar{
+  display:flex; align-items:center; gap:8px;
+  height:0; padding:0 10px; overflow:hidden;
+  opacity:0;
+  transition:height .24s cubic-bezier(.22,1,.36,1), opacity .16s ease;
+}
+.composer-wrap.hastext .composer-bar{height:30px; opacity:1}
+
+.composer-hint{
+  margin-right:auto;
+  font-size:10.5px; color:var(--faint);
+  opacity:.85; transition:opacity .16s ease;
+  pointer-events:none; display:flex; align-items:center; gap:4px;
+  white-space:nowrap;
+}
+.composer-hint kbd{
+  font:inherit; font-size:10px;
+  border:1px solid var(--line); border-radius:4px;
+  padding:1px 4px; color:inherit;
+}
+
+.composer-clear{
+  margin-left:auto; flex:0 0 auto;
+  height:20px; padding:0 8px; border:0; border-radius:6px;
+  font:inherit; font-size:11px; letter-spacing:.02em; line-height:20px;
+  background:transparent;
+  color:color-mix(in srgb, var(--text) 56%, transparent);
+  cursor:pointer;
+  transition:background .18s ease, color .18s ease, transform .18s ease;
+}
+.composer-clear:hover{
+  background:color-mix(in srgb, var(--text) 10%, transparent);
+  color:var(--text);
+}
+.composer-clear:active{transform:scale(.94)}
+
+/* 拖文件到输入框：框里长出虚线占位（和笔记里的附件空槽同一套视觉），
+   松手后收起 → 文件以进度卡落进新建的待办里。 */
+.cdrop{
+  display:flex;align-items:center;gap:8px;
+  height:0;padding:0 13px;overflow:hidden;opacity:0;
+  transition:height .26s cubic-bezier(.22,1,.36,1), opacity .18s ease,
+             padding .26s cubic-bezier(.22,1,.36,1);
+}
+.composer-wrap.dropping .cdrop{height:66px;padding:0 13px 8px;opacity:1}
+.cdrop .slot{
+  display:block;
+  width:58px;height:58px;border-radius:10px;flex:0 0 auto;position:relative;
+  border:1.5px dashed color-mix(in srgb,var(--accent) 62%,transparent);
+  background:color-mix(in srgb,var(--accent) 9%,transparent);
+  animation:cdropIn .26s cubic-bezier(.22,1,.36,1) both;
+}
+.cdrop .slot::after{
+  content:"+";position:absolute;inset:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:22px;font-weight:300;line-height:1;
+  color:color-mix(in srgb,var(--accent) 70%,transparent);
+}
+.cdrop .cdrop-more{font-size:11px;color:var(--faint);margin-left:2px}
+@keyframes cdropIn{from{opacity:0;transform:scale(.86) translateY(-4px)}to{opacity:1;transform:none}}
+
+.composer-wrap.dropping .composer-box{
+  border-color:color-mix(in srgb,var(--accent) 66%,transparent);
+  background:color-mix(in srgb,var(--accent) 7%,color-mix(in srgb,var(--card) 55%,transparent));
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 10%,transparent);
+}
+.composer-wrap.cdrop-instant .cdrop{transition:none!important}
+
+.searchbar{flex:0 0 auto;padding:0 18px 4px 28px;font-size:11.5px;color:var(--faint);display:none;
+  position:relative;z-index:100001;background:var(--bg)}
+.searchbar.on{display:block}
+
+/* ===== 列表 ===== */
+.list-wrap{
+  flex:1 1 auto; overflow-y:auto; overflow-x:hidden;
+  /* 注意：不要用 overflow-y:scroll（滚动条槽常驻，卡片永远窄 6px）或
+     scrollbar-gutter:stable+padding:0（滚动条会压住卡片）。宽度补偿由 JS 做：
+     syncScrollbarGutter() 在没有滚动条时把 padding-right 从 4 加到 10，
+     有滚动条时回到 4 —— 两种状态下卡片宽度完全一致，滚动条也不会压内容。 */
+  padding:6px 4px 64px 4px; position:relative;   /* 右 18→11→4：卡片加宽 */
+}
+.list-wrap.limit-top{
+  /* 边缘提示已改由 .edge-glow 叠层绘制（大范围渐变），这里不再画 box-shadow */
+}
+.list-wrap.limit-bottom{
+}
+.list-wrap.limit-top.limit-bottom{
+}
+
+.edgecols{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.edgecols i{
+  width:16px;height:16px;border-radius:50%;cursor:pointer;
+  border:2px solid transparent;box-sizing:border-box;
+  transition:transform .12s ease,border-color .12s ease,box-shadow .12s ease;
+}
+.edgecols i:hover{transform:scale(1.18)}
+.edgecols i.on{
+  border-color:var(--text);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--text) 18%,transparent);
+}
+
+.edgepulse{display:flex;gap:6px}
+.edgepulse b{
+  font-size:11px;font-weight:500;padding:2px 9px;border-radius:999px;
+  border:1px solid var(--line);color:var(--muted);cursor:pointer;
+  transition:background .14s ease,border-color .14s ease,color .14s ease;
+}
+.edgepulse b:hover{border-color:color-mix(in srgb,var(--text) 32%,transparent);color:var(--text)}
+.edgepulse b.on{
+  background:color-mix(in srgb,var(--accent) 18%,transparent);
+  border-color:color-mix(in srgb,var(--accent) 55%,transparent);
+  color:var(--text);
+}
+
+/* ===== 拖动时的落点指示线 =====
+   超长卡片会把指针盖住，这条线告诉用户「松手会插在这里」。
+   位置由 JS 按 SortableJS 同一套指针判定算出来。 */
+#__dropline{
+  position:fixed;height:2px;border-radius:2px;
+  background:var(--accent);
+  box-shadow:0 0 10px color-mix(in srgb,var(--accent) 55%,transparent);
+  z-index:140000;pointer-events:none;opacity:0;
+  transition:opacity .12s ease-out,top .09s ease-out,left .09s ease-out,width .09s ease-out;
+}
+
+/* ===== 拖到列表上/下边界时的提示 =====
+   颜色由 --edge-r/g/b 三个分量控制（设置里可换成任意色，默认暖红 #FF6F61）。
+   96px 五段平滑渐变 + 2px 亮线 + 外发光，1.6s 慢呼吸（不焦虑、不闪屏）。
+   .edge-glow 是 fixed 层，上/下沿位置由 JS 贴到**列表可视区**边缘。 */
+.edge-glow{
+  position:fixed;left:0;right:0;height:0;
+  z-index:150000;pointer-events:none;
+}
+.edge-glow.top{top:0}
+.edge-glow.bottom{bottom:0}
+.edge-glow i{
+  position:absolute;left:0;right:0;height:96px;opacity:0;
+  transition:opacity .14s ease-out;
+  will-change:opacity;
+}
+.edge-glow.top i{top:0;
+  border-top:2px solid rgba(var(--edge-r),var(--edge-g),var(--edge-b),.95);
+  background:linear-gradient(to bottom,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.46) 0%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.28) 10%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.13) 28%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.045) 55%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),0) 100%);
+  box-shadow:0 4px 34px rgba(var(--edge-r),var(--edge-g),var(--edge-b),.34),
+             inset 0 2px 16px rgba(var(--edge-r),var(--edge-g),var(--edge-b),.26);
+}
+.edge-glow.bottom i{bottom:0;
+  border-bottom:2px solid rgba(var(--edge-r),var(--edge-g),var(--edge-b),.95);
+  background:linear-gradient(to top,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.46) 0%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.28) 10%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.13) 28%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),.045) 55%,
+    rgba(var(--edge-r),var(--edge-g),var(--edge-b),0) 100%);
+  box-shadow:0 -4px 34px rgba(var(--edge-r),var(--edge-g),var(--edge-b),.34),
+             inset 0 -2px 16px rgba(var(--edge-r),var(--edge-g),var(--edge-b),.26);
+}
+body.limit-top .edge-glow.top i{opacity:1;animation:var(--edge-pulse-anim)}
+body.limit-bottom .edge-glow.bottom i{opacity:1;animation:var(--edge-pulse-anim)}
+@keyframes edgePulse{
+  0%,100%{opacity:1}
+  50%{opacity:.60}
+}
+
+.list-wrap::-webkit-scrollbar{width:6px}
+.list-wrap::-webkit-scrollbar-thumb{background:color-mix(in srgb, var(--text) 14%, transparent);border-radius:3px}
+.list-wrap::-webkit-scrollbar-track{background:transparent}
+
+.totop{
+  position:fixed;right:18px;bottom:18px;width:40px;height:40px;padding:0;
+  border:1px solid rgba(255,255,255,.12);border-radius:50%;
+  background:color-mix(in srgb,var(--card) 76%,transparent);
+  color:color-mix(in srgb,var(--text) 76%,transparent);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;z-index:120000;
+  opacity:0;transform:translateY(10px) scale(.9);pointer-events:none;
+  box-shadow:0 10px 28px rgba(0,0,0,.36),inset 0 1px 0 rgba(255,255,255,.1);
+  backdrop-filter:blur(14px) saturate(1.22);
+  -webkit-backdrop-filter:blur(14px) saturate(1.22);
+  transition:opacity .24s cubic-bezier(.22,1,.36,1),
+             transform .24s cubic-bezier(.22,1,.36,1),
+             background .16s ease,border-color .16s ease,
+             color .16s ease,box-shadow .16s ease;
+}
+.totop svg{width:16px;height:16px;display:block}
+.totop.on{opacity:1;transform:none;pointer-events:auto}
+.totop:hover{
+  transform:translateY(-3px) scale(1.04);
+  color:var(--text);border-color:color-mix(in srgb,var(--accent) 40%,transparent);
+  background:color-mix(in srgb,var(--card) 88%,transparent);
+  box-shadow:0 14px 32px rgba(0,0,0,.44),0 0 0 3px color-mix(in srgb,var(--accent) 13%,transparent),
+             inset 0 1px 0 rgba(255,255,255,.15);
+}
+.totop:active{
+  transform:translateY(0) scale(.92);
+  transition-duration:.08s;
+}
+body.batch .totop{opacity:0!important;pointer-events:none!important}
+
+#list{display:flex;flex-direction:column;gap:8px;padding-left:5px}   /* 2→5：左边框与待办圈的间距回来一点（介于前两版之间） */   /* 与 .zone 内部的卡片间距一致 */
+
+.note{
+  background-color:var(--card-soft);
+  /* 背景是纯色（--bg），模糊看不出任何差别，却让每张卡都变成独立合成层：
+     25 张卡滚轮滚动时每帧重绘，这是列表卡顿的主因。去掉。
+     玻璃感改由「左上角一团很淡的反光 + 底部轻微压暗 + 上沿 1px 亮边」表达，
+     全部是静态绘制，滚动时零额外成本。 */
+  background-image:
+    radial-gradient(130% 120% at 10% -10%, rgba(255,255,255,.115) 0%, rgba(255,255,255,.036) 34%, rgba(255,255,255,0) 68%),
+    linear-gradient(180deg, rgba(255,255,255,.022) 0%, rgba(0,0,0,.10) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.12),
+    inset 0 -1px 0 rgba(0,0,0,.20),
+    0 2px 3px rgba(0,0,0,.20),
+    0 14px 30px -20px rgba(0,0,0,.85);
+  border-radius:13px;
+  padding:11px 13px 11px 15px;
+  display:flex; align-items:flex-start; gap:10px;
+  border:1px solid rgba(255,255,255,.085); position:relative;
+  /* translate/scale 用独立属性：不和 FLIP / Sortable 用的 transform 打架 */
+  transition:background .18s ease,border-color .18s ease,box-shadow .18s ease,
+             translate .14s ease,scale .14s ease;
+  margin-left:20px;   /* 23→20：卡片再左移一点（圈与卡片间距仍 8px） */
+}
+/* 右键按住整条待办：整卡轻微下压（和「按住待办圈」同一套压感） */
+.note.pressing{
+  translate:0 1.5px;
+  scale:.9975;
+  border-color:color-mix(in srgb,var(--accent) 34%,rgba(255,255,255,.085));
+  background-color:var(--card-hover);
+}
+/* 拖动 / 滚动期间都不进入任何 hover 态。
+   原因一（拖动）：SortableJS 的 fallback 是克隆体，原卡片还留在原位；鼠标一路滑过去时
+   `:hover` 仍会命中「被拖的那张自己」——用户看到的就是拖动过程中自己的
+   「建 xxx / 编辑 / 删除」被点亮。
+   原因二（滚动）：快速滚动时卡片一张张从指针下掠过，浏览器会自动切换 `:hover`，
+   再叠加 .15s 的淡出过渡，视觉上就是「好几张卡的创建时间同时亮着」。
+   注意：只拦 JS 的 .hovering 不够 —— `:hover` 是浏览器自己维护的伪类，
+   必须由 CSS 这一层按 body 状态关掉。 */
+body:not(.sorting):not(.scrolling) .note:hover,
+body:not(.sorting):not(.scrolling) .note.hovering{                 /* 指针压在附件热区上 = 仍在这张卡里 */
+  background-color:var(--card-hover);
+  border-color:rgba(255,255,255,.135);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.16),
+    inset 0 -1px 0 rgba(0,0,0,.20),
+    0 3px 6px rgba(0,0,0,.24),
+    0 18px 34px -20px rgba(0,0,0,.9);
+}
+.note.selected{border-color:color-mix(in srgb, var(--accent) 55%, transparent)}
+.note.done{background-color:var(--card-done)}
+.note.done .text{color:var(--text-done)}
+
+.note .bar{
+  position:absolute; left:4px; top:16px; bottom:16px; width:4px;
+  border-radius:2px; background:color-mix(in srgb, var(--line) 45%, transparent);
+  cursor:pointer; transition:opacity .15s ease, filter .15s ease; opacity:.3;
+}
+.note .bar.has{opacity:.95}
+.note .bar:hover{opacity:1;filter:brightness(1.2)}
+
+.ring{
+  /* 在卡片外面（旧版 WPF 的布局）：绝对定位到卡片左侧外沿 */
+  position:absolute; left:-26px; top:10px;
+  width:17px;height:17px;border-radius:5px;
+  border:2.2px solid color-mix(in srgb, var(--text) 40%, transparent);
+  cursor:pointer;
+  transition:border-color .34s ease,background .16s ease,transform .12s ease,box-shadow .34s ease,
+             opacity .16s ease, visibility .2s;
+}
+.ring:hover{border-color:color-mix(in srgb,var(--text) 62%,transparent);transform:scale(1.06)}
+/* 按住圈：缩一下，给压感（松手回弹） */
+.ring:active,
+.ring.pressing{
+  transform:scale(.86);
+  border-color:var(--accent);
+  box-shadow:inset 0 0 0 .55px var(--accent);
+  transition:transform .12s ease,border-color .18s ease,box-shadow .18s ease;
+}
+/* 完成态：不填实心色，只把圈和对勾变成强调色 */
+/* 点下去之后才慢慢变绿（0.34s 过渡），不是悬停就绿 */
+.ring.on{
+  background:transparent;border-color:var(--accent);
+  /* 已完成：描边视觉上更粗一档（inset 阴影加粗，不改 border-width，
+     否则圈的实际尺寸会变、卡片布局跟着抖） */
+  box-shadow:inset 0 0 0 .55px var(--accent);
+  transition:border-color .34s ease,box-shadow .34s ease,transform .34s ease;
+}
+.ring.on::after{
+  content:"";position:absolute;left:50%;top:50%;
+  width:6.6px;height:3.6px;
+  border-left:2px solid var(--accent);
+  border-bottom:2px solid var(--accent);
+  border-radius:.5px;
+  transform:translate(-50%,-58%) rotate(-45deg);
+}
+
+.chk{
+  /* 和 .ring 完全同一坐标（卡片左侧外沿），批量模式切换时卡片内容不会左右跳 */
+  position:absolute;left:-26px;top:10px;
+  width:17px;height:17px;border-radius:5px;
+  border:2px solid color-mix(in srgb, var(--text) 38%, transparent);
+  cursor:pointer;display:flex;
+  align-items:center;justify-content:center;
+  font-size:11px;color:var(--bg);font-weight:700;
+  opacity:0;visibility:hidden;transform:scale(.6);
+  transition:background .14s,border-color .14s,opacity .16s ease,
+             transform .22s cubic-bezier(.22,1,.36,1), visibility .2s;
+}
+/* 圈和勾选框交叉淡换：同一个位置、同一个尺寸，不会闪断 */
+body.batch .chk{opacity:1;visibility:visible;transform:none}
+body.batch .ring{opacity:0;visibility:hidden;pointer-events:none;transform:scale(.82)}
+.chk.on{background:var(--accent);border-color:var(--accent)}
+
+.body{flex:1 1 auto;min-width:0}
+.text{line-height:1.55;white-space:pre-wrap;word-break:break-word;padding:1px 0;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:15;overflow:hidden}
+.text[contenteditable="true"]{-webkit-line-clamp:unset;display:block}
+.hl{background:color-mix(in srgb,var(--accent) 28%,transparent);color:inherit;border-radius:3px;padding:0 1px}
+.text[contenteditable="true"]{
+  /* 编辑区＝嵌进卡片里的一层暗槽：更深的底色 + 内阴影，
+     不再用主色描边（原来那圈绿边和卡片外框撞色，看着像套了两层框）。 */
+  outline:none;
+  background:color-mix(in srgb,#000 38%,transparent);
+  border-radius:8px;padding:5px 8px;margin:-5px -8px;
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,.5),
+    inset 0 0 0 1px rgba(0,0,0,.30),
+    inset 0 -1px 0 rgba(255,255,255,.05);
+  caret-color:var(--accent);
+  transition:background .16s ease,box-shadow .16s ease;
+}
+.text[contenteditable="true"]:focus{
+  background:color-mix(in srgb,#000 46%,transparent);
+  box-shadow:
+    inset 0 1px 3px rgba(0,0,0,.55),
+    inset 0 0 0 1px rgba(0,0,0,.34),
+    inset 0 -1px 0 rgba(255,255,255,.055);
+}
+
+/* ===== 附件 =====
+   不要外框：缩略图＝一个正方形铺满；文件＝系统图标在上、名字在下。
+   图标与缩略图都由 C# 按高清源生成，这里只做等比缩放。 */
+.atts{display:flex;gap:11px;margin-top:10px;flex-wrap:wrap;align-items:flex-start}
+.atts:empty{display:none;margin:0}
+
+.att{
+  width:78px;position:relative;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;
+}
+.att .thumb{
+  width:78px;height:78px;object-fit:cover;display:block;border-radius:10px;
+  transition:transform .34s cubic-bezier(.22,1,.36,1),box-shadow .3s ease,filter .3s ease;
+}
+.att .thumbbox{
+  /* 和缩略图同一个 78×78 画面区：一行里的文件名才会落在同一条基线上 */
+  width:78px;height:78px;
+  display:flex;align-items:center;justify-content:center;
+  transition:transform .34s cubic-bezier(.22,1,.36,1),filter .3s ease;
+}
+.att .thumbbox .sysico,
+.att .thumbbox .ico,
+.att .thumbbox .ico svg{
+  width:100%;height:100%;max-width:100%;max-height:100%;
+  object-fit:contain;display:block;
+  filter:drop-shadow(0 2px 5px rgba(0,0,0,.32));
+}
+.att .thumbbox .ico{display:block}
+
+  /* 视频还没抽到首帧时的占位：深色玻璃块 + 小播放标（不再用 40px 的大播放器图标） */
+  .att .vidph{
+    width:78px;height:78px;border-radius:10px;
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;
+    background:
+      radial-gradient(120% 120% at 28% 18%, rgba(255,255,255,.14), rgba(255,255,255,0) 62%),
+      linear-gradient(160deg,#222823,#101312);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.09);
+    transition:transform .34s cubic-bezier(.22,1,.36,1), filter .3s ease, box-shadow .3s ease;
+  }
+  .att .vidph svg{width:14px;height:14px;display:block;margin-left:2px;opacity:.92}
+  .att.hot .vidph{
+    transform:scale(1.055) translateY(-2px);
+    filter:brightness(1.12);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.16), 0 10px 22px rgba(0,0,0,.5);
+  }
+  .att.press .vidph{transform:scale(.94);filter:brightness(.94)}
+.att img{-webkit-user-drag:none;user-select:none}
+
+/* 文件名：缩略图和文件图标都有；后缀单独一段，永远不被省略号吃掉 */
+.att .nm{
+  width:100%;margin-top:4px;
+  display:flex;align-items:baseline;justify-content:center;
+  font-size:9px;line-height:12px;padding:0 1px;
+  color:var(--muted);
+  transition:color .16s ease;
+}
+.att .nm .bn{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att .nm .ex{flex:0 0 auto;white-space:nowrap;color:color-mix(in srgb,var(--muted) 72%,var(--bg))}
+
+.att .x{
+  /* 不压在画面里：贴在方块的右上角、一半探出去（和 Finder / 上传组件的删除角标一致），
+     视觉上不挡缩略图内容，也不会和文件名抢位置。 */
+  position:absolute;top:-7px;right:-7px;width:20px;height:20px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(26,26,28,.86);color:rgba(255,255,255,.92);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  /* 不再常显：附件被 C# 的透明窗口盖着，:hover 不会触发，
+     所以由热区回报 .att.hot（C# MouseEnter/MouseLeave）。 */
+  opacity:0;pointer-events:none;transform:scale(.6) translateY(-2px);cursor:pointer;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 3px 9px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.14);
+  transition:opacity .26s ease,background .2s ease,
+             transform .3s cubic-bezier(.22,1,.36,1),
+             border-color .2s ease,box-shadow .2s ease;
+  line-height:0;
+}
+.att .x svg{width:8px;height:8px;display:block;margin:0;transform:translate(.15px,.15px)}
+.att.hot .x{opacity:.95;pointer-events:auto;transform:none}
+.att .x:hover{background:#c9615a;color:#fff;border-color:#c9615a}
+.att .x:active{
+  transform:scale(.8);background:#b8493f;border-color:#b8493f;
+  box-shadow:0 0 0 3px color-mix(in srgb,#e0796f 22%,transparent);
+}
+.att.dragging-att{opacity:.32;transform:none}
+.att.dragging-att .x{opacity:0 !important}
+/* 悬停：放大一点 + 提亮 + 投影；按住：压下去 */
+.att.hot .thumb{
+  transform:scale(1.055) translateY(-2px);
+  filter:brightness(1.1) saturate(1.06);
+  box-shadow:0 10px 22px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+}
+.att.hot .thumbbox{
+  transform:translateY(-2px) scale(1.06);
+  filter:brightness(1.12) drop-shadow(0 8px 14px rgba(0,0,0,.55));
+}
+.att.hot .nm{color:var(--text)}
+.att.press .thumb{transform:scale(.94);filter:brightness(.94)}
+.att.press .thumbbox{transform:scale(.92)}
+.att.hot .thumb,.att.press .thumb,
+.att.hot .thumbbox,.att.press .thumbbox{will-change:transform,filter}
+.att.press .x{opacity:0 !important}
+/* 按在角标上：角标自己变红 + 明显缩一下（否则只有整块缩，看不出按中了叉）。
+   transition 必须比平时快（.1s）：跟随手感，不然按下像「慢慢缩」。 */
+.att.badgepress .x{
+  opacity:1 !important;pointer-events:auto;
+  background:#c9615a;color:#fff;border-color:#c9615a;
+  transform:scale(.72) translateY(1px);
+  box-shadow:0 0 0 3px color-mix(in srgb,#e0796f 28%,transparent),
+             inset 0 1px 3px rgba(0,0,0,.38);
+  transition:opacity .1s ease,background .1s ease,
+             transform .09s cubic-bezier(.2,.9,.3,1),
+             border-color .1s ease,box-shadow .1s ease;
+}
+.att-ghost{
+  transition:none !important;
+  will-change:transform;
+  pointer-events:none;
+  box-shadow:0 16px 34px rgba(0,0,0,.62), 0 3px 10px rgba(0,0,0,.45);
+  border-radius:10px;
+}
+.att.drop-before{box-shadow:inset 3px 0 0 var(--accent)}
+.att.drop-after{box-shadow:inset -3px 0 0 var(--accent)}
+
+/* 外部文件拖入时的空槽：尺寸与真实附件一致（78 缩略图 + 12 文件名行），
+   虚线只表示「会插到这里」，不是外框。 */
+.att-slot{pointer-events:none;cursor:default}
+.att-slot .thumbbox{
+  border:1.5px dashed color-mix(in srgb,var(--accent) 60%,transparent);
+  border-radius:10px;
+  background:color-mix(in srgb,var(--accent) 9%,transparent);
+  color:color-mix(in srgb,var(--accent) 75%,transparent);
+}
+.att-slot .thumbbox::after{content:"+";font-size:22px;font-weight:300;line-height:1}
+.att-slot .nm{visibility:hidden}
+
+/* 视频缩略图中间的播放标：和图片一眼区分开 */
+.att .play{
+  position:absolute;left:50%;top:39px;transform:translate(-50%,-50%);
+  width:34px;height:34px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;
+  /* 底色要够实：压在白底图上才不会发灰显脏；再用 inner ring 提亮轮廓 */
+  background:rgba(12,12,14,.52);
+  border:1px solid rgba(255,255,255,.30);
+  box-shadow:0 8px 20px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.16);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  pointer-events:none;
+  transition:transform .34s cubic-bezier(.22,1,.36,1), background .3s ease, box-shadow .3s ease;
+}
+.att .play::after{
+  /* 细一圈内描边：玻璃质感，不是实心圆饼 */
+  content:"";position:absolute;inset:2px;border-radius:50%;
+  border:1px solid rgba(255,255,255,.10);
+}
+.att .play svg{
+  width:12px;height:12px;display:block;margin-left:2px;
+  filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));
+}
+.att.hot .play{
+  transform:translate(-50%,-50%) scale(1.07);
+  background:rgba(12,12,14,.62);
+  box-shadow:0 10px 24px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.22);
+}
+
+.foot{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-top:10px;font-size:11px;color:color-mix(in srgb, var(--text) 58%, var(--bg));
+}
+.foot .acts{display:flex;gap:1px;align-items:center}
+.foot .made{
+  font-size:10.5px;color:color-mix(in srgb,var(--text) 42%,var(--bg));
+  padding:0 7px 0 0;white-space:nowrap;
+}
+.foot .acts span{
+  cursor:pointer;padding:3px 9px;border-radius:6px;
+  color:color-mix(in srgb, var(--text) 66%, var(--bg));
+  font-size:11.5px;
+  transition:color .15s,background .15s;
+  opacity:0;
+}
+body:not(.sorting):not(.scrolling) .note:hover .foot .acts span,
+body:not(.sorting):not(.scrolling) .note.hovering .foot .acts span{opacity:1}   /* hovering：指针压在附件热区上时也要保持显示 */
+/* 「建 xxx」不是按钮：鼠标压上去不许变色/变指针（它没有交互） */
+.foot .acts span.made{cursor:default}
+.foot .acts span:not(.made):hover{color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent)}
+.foot .acts span.del:hover{color:#e0796f;background:color-mix(in srgb,#e0796f 13%,transparent)}
+
+/* ===== SortableJS ===== */
+.note.att-over{
+  border-color:color-mix(in srgb,var(--accent) 70%,transparent);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent);
+}
+.note.ghost{
+  opacity:.28;background:color-mix(in srgb,var(--accent) 9%,transparent);
+  border:1.5px dashed color-mix(in srgb,var(--accent) 42%,transparent);
+}
+.note.chosen{
+  box-shadow:0 10px 22px rgba(0,0,0,.46),
+             0 0 0 3px color-mix(in srgb,var(--accent) 68%,transparent),
+             0 0 16px color-mix(in srgb,var(--accent) 26%,transparent);
+  border-color:color-mix(in srgb,var(--accent) 68%,transparent);
+}
+.note.dragging{
+  background-color:rgba(255,255,255,.1);
+  box-shadow:0 14px 26px rgba(0,0,0,.5),
+             0 0 0 3px color-mix(in srgb,var(--accent) 78%,transparent),
+             0 0 18px color-mix(in srgb,var(--accent) 30%,transparent);
+  border-color:color-mix(in srgb,var(--accent) 78%,transparent);
+  cursor:grabbing;
+}
+/* 被拖的那张是逐帧移动的：模糊背景滤镜每帧重绘，往上拖会明显卡 */
+.sortable-fallback,.note.dragging{will-change:transform}
+.sortable-fallback{backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
+
+.empty{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  color:var(--faint);font-size:12.5px;pointer-events:none;text-align:center;padding:0 40px;
+}
+.hint{
+  position:fixed;bottom:16px;left:50%;
+  transform:translateX(-50%) translateY(9px) scale(.97);
+  font-size:11.5px;color:var(--text);
+  background:color-mix(in srgb,var(--card) 90%,#000);
+  border:1px solid var(--line);
+  padding:6px 14px;border-radius:14px;pointer-events:none;
+  opacity:0;
+  transition:opacity .50s cubic-bezier(.22,1,.36,1),
+             transform .50s cubic-bezier(.22,1,.36,1);
+  white-space:nowrap;z-index:60;
+}
+/* 出现：animation（每次挂 .show 都从头播，连点必重播）
+   消失：transition（摘掉 .show 时淡出） */
+.hint.show{
+  opacity:1;
+  transform:translateX(-50%) translateY(0) scale(1);
+}
+
+.batchbar{
+  /* 批量编辑时顶掉输入框：同一位置、同一条基线，列表不会跳 */
+  position:absolute;left:28px;right:18px;top:6px;height:48px;
+  display:flex;align-items:center;gap:8px;
+  min-height:48px;padding:6px 12px;border-radius:10px;
+  background:color-mix(in srgb,var(--card) 62%,transparent);
+  border:1px solid var(--line);
+  opacity:0;visibility:hidden;pointer-events:none;
+  transform:translateY(7px) scale(.985);
+  transition:opacity .16s ease,
+             transform .24s cubic-bezier(.22,1,.36,1),
+             visibility .24s;
+}
+.batchbar.on{
+  opacity:1;visibility:visible;pointer-events:auto;transform:none;
+}
+.batchbar .spacer{flex:1 1 auto}
+.batchbar button{
+  background:color-mix(in srgb,#fff 7%,transparent);border:none;
+  color:var(--text);font:inherit;font-size:12px;
+  padding:6px 11px;border-radius:8px;cursor:pointer;
+  opacity:0;transform:translateY(5px);
+  transition:background .15s, opacity .18s ease,
+             transform .26s cubic-bezier(.22,1,.36,1);
+}
+.batchbar.on button{opacity:1;transform:none}
+/* 进去的时候从左到右依次落位；退出时不给延迟，整体一起收 */
+.batchbar.on button:nth-of-type(1){transition-delay:0s,.02s,.02s}
+.batchbar.on button:nth-of-type(2){transition-delay:0s,.05s,.05s}
+.batchbar.on button:nth-of-type(3){transition-delay:0s,.08s,.08s}
+.batchbar.on button:nth-of-type(4){transition-delay:0s,.11s,.11s}
+.batchbar.on button:nth-of-type(5){transition-delay:0s,.14s,.14s}
+.batchbar button:hover{background:color-mix(in srgb,#fff 13%,transparent)}
+.batchbar button.danger:hover{background:color-mix(in srgb,#e0796f 22%,transparent)}
+
+.panel{
+  position:fixed;inset:0;z-index:200000;display:none;   /* 必须高于输入区的 100001，否则输入框会浮在弹窗上 */
+  background:color-mix(in srgb,var(--bg) 70%,transparent);
+  backdrop-filter:blur(3px);
+}
+.panel.on{display:flex;align-items:center;justify-content:center;padding:22px}
+.panel .box{
+  background:color-mix(in srgb,var(--card) 96%,#000);
+  border:1px solid var(--line);
+  border-radius:16px;width:100%;max-height:100%;
+  display:flex;flex-direction:column;overflow:hidden;
+  box-shadow:0 24px 60px rgba(0,0,0,.55);
+}
+.panel .hd{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;border-bottom:1px solid var(--line);
+}
+.panel .hd b{font-size:13.5px;font-weight:600}
+.panel .hd .x{cursor:pointer;color:var(--muted);font-size:16px;padding:0 4px}
+.panel .hd .x:hover{color:var(--text)}
+.panel .bd{padding:14px 16px;overflow-y:auto}
+.panel .bd::-webkit-scrollbar{width:6px}
+.panel .bd::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--text) 14%,transparent);border-radius:3px}
+
+.row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;font-size:12.5px}
+.row .k{color:var(--muted)}
+.switch{
+  width:38px;height:21px;border-radius:11px;background:color-mix(in srgb,#fff 12%,transparent);
+  position:relative;cursor:pointer;transition:background .18s;flex:0 0 auto;
+}
+.switch.on{background:var(--accent)}
+.switch i{
+  position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;
+  background:#fff;transition:transform .18s;
+}
+.switch.on i{transform:translateX(17px)}
+
+.palettes{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px}
+.pal{
+  height:38px;border-radius:9px;cursor:pointer;position:relative;
+  border:2px solid transparent;transition:border-color .15s,transform .12s;
+  display:flex;align-items:center;justify-content:center;
+  font-size:9.5px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);
+}
+.pal:hover{transform:translateY(-1px)}
+.pal.on{border-color:var(--text)}
+
+.trashitem{
+  background:color-mix(in srgb,var(--card) 78%,var(--bg));
+  border:1px solid var(--line);border-radius:10px;
+  padding:10px 12px;margin-bottom:8px;
+}
+.trashitem .t{font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.trashitem .a{display:flex;gap:10px;margin-top:7px;font-size:11.5px}
+.trashitem .a span{cursor:pointer;color:var(--muted);padding:2px 6px;border-radius:5px}
+.trashitem .a span:hover{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.trashitem .a span.del:hover{color:#e0796f}
+
+.colorpop{
+  position:fixed;z-index:90;display:none;
+  background:color-mix(in srgb,var(--card) 97%,#000);
+  border:1px solid var(--line);border-radius:12px;
+  padding:9px;box-shadow:0 14px 34px rgba(0,0,0,.5);
+  grid-template-columns:repeat(6,26px);
+  grid-template-rows:repeat(2,26px);
+  gap:8px;
+}
+.colorpop.on{display:grid}
+.colorpop i{
+  width:26px;height:26px;border-radius:50%;cursor:pointer;
+  border:2px solid transparent;transition:transform .12s;
+}
+.colorpop i:hover{transform:scale(1.12)}
+.colorpop i.none{
+  background:color-mix(in srgb,#fff 10%,transparent);
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:var(--muted);font-style:normal;
+  /* 清除颜色：竖着占满左列两行，右边 10 个色填满 5+5 —— 整个色板正好 6×2 对称 */
+  grid-row:1 / span 2;
+  height:auto;
+  align-self:stretch;
+  border-radius:13px;
+}
+
+/* ===== 两个分区容器（未完成 / 已完成）===== */
+.zone{display:flex;flex-direction:column;gap:8px}
+.zone + .zone{margin-top:0}      /* 区与区之间就用 #list 的 8px，不再额外加间距/分隔线 */
+.zone-done{opacity:.92}
+
+/* ===== 拖动跨区：卡片离开自己那一区（已完成/未完成）时的视觉拦截 ===== */
+.sortable-fallback.out-zone{
+  opacity:.42;
+  box-shadow:0 0 0 1.5px rgba(214,96,96,.9), 0 14px 40px rgba(0,0,0,.5) !important;
+  transition:opacity .18s ease, box-shadow .18s ease;
+}
+.sortable-fallback.out-zone .text,
+.sortable-fallback.out-zone .foot,
+.sortable-fallback.out-zone .nm{color:var(--muted)}
+.sortable-fallback.out-zone::after{
+  content:"放不了这里";
+  position:absolute; left:50%; top:50%;
+  transform:translate(-50%,-50%);
+  background:rgba(198,74,74,.94); color:#fff;
+  padding:5px 13px; border-radius:9px;
+  font-size:12px; letter-spacing:.5px; white-space:nowrap;
+  pointer-events:none;
+  box-shadow:0 6px 18px rgba(0,0,0,.45);
+}
+
+/* ===== 右下角第二个圆钮：跳到已完成 ===== */
+#todone{bottom:66px}
+.totop.done{
+  color:#5fd3a6;
+  border-color:rgba(95,211,166,.55);
+  background:color-mix(in srgb,#5fd3a6 16%,var(--card-soft));
+  box-shadow:0 0 0 4px rgba(95,211,166,.16),0 10px 28px rgba(0,0,0,.4);
+}
+
+/* ===== 外部文件拖入预览（只要占位，不要文字提示） =====
+   落在某条笔记上 → 那条的附件行里插入虚线空槽（.att-slot）；
+   落在空白/输入框  → 列表顶部一张虚线占位卡（#droppreview）。 */
+#droppreview{
+  position:fixed;z-index:70;
+  display:flex;align-items:flex-start;gap:12px;
+  padding:12px 14px;
+  border:1.5px dashed color-mix(in srgb,var(--accent) 58%,transparent);
+  border-radius:12px;
+  background:color-mix(in srgb,var(--accent) 8%,var(--card-soft));
+  box-shadow:0 12px 28px -20px rgba(0,0,0,.9);
+  animation:dropHintIn .16s ease-out;
+  pointer-events:none;
+}
+#droppreview .npthumb{
+  width:78px;height:78px;flex:0 0 auto;border-radius:10px;position:relative;
+  border:1.5px dashed color-mix(in srgb,var(--accent) 55%,transparent);
+  background:color-mix(in srgb,var(--accent) 10%,transparent);
+}
+#droppreview .npthumb::after{
+  content:"+";position:absolute;left:0;right:0;top:50%;transform:translateY(-52%);
+  text-align:center;font-size:24px;font-weight:300;line-height:1;
+  color:color-mix(in srgb,var(--accent) 72%,transparent);
+}
+#droppreview .nplines{flex:1 1 auto;display:flex;flex-direction:column;gap:8px;padding-top:8px}
+#droppreview .nplines i{
+  display:block;height:9px;border-radius:999px;
+  background:color-mix(in srgb,var(--text) 11%,transparent);
+}
+#droppreview .nplines i:last-child{width:56%}
+@keyframes dropHintIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+
+/* ===== 拖入后的分片复制：进度 / 完成 / 失败都在原地表达 ===== */
+.att-up{cursor:default;animation:upTileIn .28s cubic-bezier(.22,1,.36,1) both}
+@keyframes upTileIn{from{opacity:0;transform:translateY(6px) scale(.9)}to{opacity:1;transform:none}}
+.att-up .thumbbox{
+  position:relative;border-radius:10px;
+  background:color-mix(in srgb,var(--card) 82%,#000);
+  border:1px solid color-mix(in srgb,var(--text) 13%,transparent);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
+}
+.att-up .upring{
+  position:absolute;left:11px;top:11px;width:56px;height:56px;
+  transform:rotate(-90deg);
+}
+.att-up .upring .bg{fill:none;stroke:color-mix(in srgb,var(--text) 12%,transparent);stroke-width:2.4}
+.att-up .upring .fg{
+  fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linecap:round;
+  transition:stroke-dashoffset .18s linear;
+}
+.att-up .pc{
+  position:relative;font-size:11px;letter-spacing:.2px;
+  color:color-mix(in srgb,var(--text) 86%,transparent);
+  font-variant-numeric:tabular-nums;
+}
+.att-up.ok .upring .fg{stroke:#5fd3a6}
+.att-up.ok .pc{color:#5fd3a6;font-size:14px}
+.att-up.bad .upring{display:none}
+.att-up.bad .thumbbox{
+  border-color:color-mix(in srgb,#e0796f 55%,transparent);
+  background:color-mix(in srgb,#e0796f 10%,var(--card));
+}
+.att-up.bad .pc{color:#e0796f;font-size:16px;font-weight:600}
+.att-up.bad .nm .bn{color:#e0796f}
+
+#upshelf{
+  position:fixed;z-index:70;
+  display:flex;gap:11px;flex-wrap:wrap;align-items:flex-start;
+  padding:12px 14px;border-radius:12px;
+  border:1.5px dashed color-mix(in srgb,var(--accent) 45%,transparent);
+  background:color-mix(in srgb,var(--card) 74%,transparent);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  box-shadow:0 12px 28px -20px rgba(0,0,0,.9);
+}
+
+.note.drop-target{
+  border-color:color-mix(in srgb,var(--accent) 72%,transparent)!important;
+  background-color:color-mix(in srgb,var(--accent) 8%,var(--card-soft))!important;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent),
+    0 16px 34px -20px rgba(0,0,0,.92)!important;
+}
+/* 新建笔记落地时的一次性高亮 */
+.note.pop{animation:notePop 1.05s cubic-bezier(.22,1,.36,1)}
+@keyframes notePop{
+  0%{transform:scale(.985);box-shadow:0 0 0 0 rgba(95,211,166,0)}
+  42%{transform:scale(1.012);box-shadow:0 0 0 6px rgba(95,211,166,.17)}
+  100%{transform:scale(1);box-shadow:0 0 0 0 rgba(95,211,166,0)}
+}
+
+/* ===== v2731：设置面板补充 ===== */
+.sep{height:1px;background:rgba(255,255,255,.07);margin:12px 0 10px}
+.secttl{font-size:12px;color:var(--muted);margin-bottom:6px}
+.dataroot{
+  font-size:11.5px;line-height:1.5;color:color-mix(in srgb,var(--text) 84%,transparent);
+  background:color-mix(in srgb,#000 28%,transparent);
+  border:1px solid rgba(255,255,255,.07);border-radius:8px;
+  padding:7px 9px;word-break:break-all;max-height:62px;overflow:auto;
+}
+.datarow{display:flex;align-items:center;gap:10px;margin-top:8px}
+.datarow button{
+  font:inherit;font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer;
+  background:color-mix(in srgb,var(--accent) 18%,transparent);
+  border:1px solid color-mix(in srgb,var(--accent) 42%,transparent);color:var(--text);
+  transition:background .15s ease,border-color .15s ease;
+}
+.datarow button:hover{background:color-mix(in srgb,var(--accent) 30%,transparent)}
+.dsize{font-size:11.5px;color:var(--muted)}
+.datanote{font-size:11px;color:color-mix(in srgb,var(--muted) 88%,transparent);margin-top:7px;line-height:1.5}
+
+/* ===== 待办条：按住那一刻的「压下去」反馈（transform 归拖拽用，这里只用内阴影+压暗） ===== */
+.note.pressing{
+  filter:brightness(.92);
+  box-shadow:
+    inset 0 3px 14px rgba(0,0,0,.55),
+    inset 0 1px 0 rgba(255,255,255,.05),
+    0 2px 6px rgba(0,0,0,.35);
+}
+
+/* ===== 滚动条：指到/拖动时给反馈 ===== */
+.list-wrap::-webkit-scrollbar-thumb:hover{
+  background:color-mix(in srgb,var(--text) 30%,transparent);
+}
+.list-wrap::-webkit-scrollbar-thumb:active{
+  background:color-mix(in srgb,var(--text) 44%,transparent);
+}
+.list-wrap::-webkit-scrollbar:hover{
+  background:color-mix(in srgb,var(--text) 7%,transparent);
+}
+
+/* ===== 右下角两个圆钮：加大 ===== */
+.totop{width:48px;height:48px}
+.totop svg{width:19px;height:19px}
+#todone{bottom:78px}
+
+/* ===== 置顶角标（v2741）=====
+   卡片右上角一个小按钮：点一下置顶、再点取消。置顶的待办单独成区（和待办/已完成同一套 group 隔离）。
+   角标常显但很淡（不然找不到），置顶后变主色。 */
+.note .pin{
+  position:absolute; top:5px; right:5px;
+  width:20px; height:20px; border-radius:7px;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer; opacity:.26; z-index:2;
+  color:color-mix(in srgb,var(--text) 82%,transparent);
+  background:transparent;
+  transition:opacity .15s ease, background .15s ease, color .15s ease;
+}
+.note .pin svg{width:12px;height:12px;fill:currentColor;display:block}
+body:not(.sorting):not(.scrolling) .note:hover .pin,
+body:not(.sorting):not(.scrolling) .note.hovering .pin{opacity:.72}
+.note .pin:hover{opacity:1;background:color-mix(in srgb,var(--accent) 20%,transparent)}
+.note .pin.on{
+  opacity:1;
+  color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 16%,transparent);
+}
+/* 正文右边给角标让出 22px，避免第一行字被压住 */
+.note .text{padding-right:22px}
+
+/* 设置面板里可点击的「打开 ›」行（回收站入口） */
+.row .go{
+  font-size:12px;color:var(--accent);cursor:pointer;opacity:.85;
+  padding:2px 4px;border-radius:6px;transition:opacity .15s,background .15s;
+}
+.row .go:hover{opacity:1;background:color-mix(in srgb,var(--accent) 14%,transparent)}
+
+/* 回收站标题旁的占用信息（「共 3 条 · 2 个文件 · 12.3 MB」） */
+.panel .hd .thmeta{
+  margin-left:auto;margin-right:8px;
+  font-size:11.5px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}

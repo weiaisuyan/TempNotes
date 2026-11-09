@@ -1,0 +1,31 @@
+# ===== 数据 / 备份：绝不入库 =====
+data/
+versions/
+_release/
+work/
+wv2data/
+wv2demo/
+data_backup_*/
+data_bak_*/
+root.txt
+
+# ===== 编译产物 =====
+bin/
+obj/
+*.exe
+*.pdb
+*.suo
+*.user
+
+# ===== .NET Framework 引用程序集（154MB，本机编译环境专用，见 README） =====
+src2/refs/
+
+# ===== 日志 =====
+*.log
+
+# ===== 截图 / 录屏 =====
+*.png
+*.mp4
+
+# ===== 旧版 v1 外壳（已废弃，仅留本地） =====
+src/
