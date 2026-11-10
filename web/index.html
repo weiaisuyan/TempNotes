@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>随记</title>
-<link rel="stylesheet" href="style.css?v=2792">
+<link rel="stylesheet" href="style.css?v=2831">
 </head>
 <body>
 
@@ -31,6 +31,9 @@
       <button id="batchExit">退出</button>
     </div>
   </div>
+
+  <!-- 优先级筛选条：只有给优先级起了名字才出现（见 app.js renderStrip） -->
+  <div class="fstrip" id="fstrip" aria-label="按优先级筛选"></div>
 
   <div class="searchbar" id="searchbar"></div>
 
@@ -70,8 +73,13 @@
         <div class="palettes" id="palettes"></div>
         <div class="row" style="margin-top:12px"><span class="k">拖到边界的提示色</span><span class="edgecols" id="edgeColors"></span></div>
         <div class="row"><span class="k">提示闪烁节奏</span><span class="edgepulse" id="edgePulses"></span></div>
+
+        <div class="sep"></div>
+        <div class="secttl">优先级名称</div>
+        <div class="labelgrid" id="labelGrid"></div>
+        <div class="datanote">给每条优先级起个名字（最多 5 个字），它会显示在待办条左上角，也可以拿来筛选；留空就不显示。名字属于颜色本身，两端共用同一份。</div>
+
         <div style="height:14px"></div>
-        <div class="row"><span class="k">窗口置顶</span><span class="switch" id="swTop"><i></i></span></div>
         <div class="row"><span class="k">开机自启</span><span class="switch" id="swAuto"><i></i></span></div>
         <div class="row"><span class="k">右键设为已完成</span><span class="switch" id="swRight"><i></i></span></div>
         <div class="row"><span class="k">回收站</span><span class="go" id="rowTrash">打开 ›</span></div>
@@ -102,7 +110,7 @@
     </div>
   </div>
 
-  <script src="Sortable.min.js?v=2790"></script>
-  <script src="app.js?v=2794"></script>
+  <script src="Sortable.min.js?v=2831"></script>
+  <script src="app.js?v=2831"></script>
 </body>
 </html>

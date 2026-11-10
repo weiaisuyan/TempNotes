@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-10-2829";
+var APPJS_VER = "2026-11-10-2831";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -1785,16 +1785,9 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
   var _flipPrev = null;
   /* 筛选条：只有「至少一个优先级起了名字」才出现 —— 没起名字时页面跟以前完全一样。
      chip 数字只数没完成的；0 条的 chip 留着变暗，位置不跳。 */
+  var _stripSig = "";   // 上次画出来的内容指纹：没变就一颗 chip 都不重建
   function renderStrip() {
     if (!stripEl) return;
-    /* 重画会把 chip 全部换新，正在拖的那颗会变成孤儿：先干净收掉这次拖动（不写盘） */
-    if (_chipPtr || _chipDrag) {
-      _chipPtr = null;
-      _chipDrag = null;
-      if (_chipGhost) { try { _chipGhost.parentNode.removeChild(_chipGhost); } catch (e0) { } _chipGhost = null; }
-      stopChipAutoScroll();
-      document.body.classList.remove('chip-dragging');
-    }
     if (!stripEl._wheel) {
       stripEl._wheel = 1;
       // 竖滚轮 → 横向滚动（这一条永远不换行）
@@ -1808,25 +1801,66 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     // 正在筛的颜色如果被改名清空了，就没有对应 chip 可高亮 —— 直接回「全部」
     if (fkey && fkey !== "__none__" && !labelOf(fkey)) fkey = null;
 
-    if (!hasLabels()) { stripEl.classList.remove("on"); stripEl.innerHTML = ""; return; }
+    if (!hasLabels()) {
+      if (stripEl.classList.contains("on") || stripEl.innerHTML) {
+        stripEl.classList.remove("on");
+        stripEl.innerHTML = "";
+      }
+      _stripSig = "";
+      return;
+    }
     stripEl.classList.add("on");
 
-    var html = '<button type="button" class="chip" data-key="">全部</button>';
+    // 先把要画的东西算干净（顺序 / 名字 / 条数），顺便拼一个内容指纹
+    var rows = [];
     for (var oi = 0; oi < labelOrder.length; oi++) {
-      var i = labelOrder[oi];
-      var name = (labels[i] || "").trim();
-      if (!name) continue;
-      var c = NOTE_COLORS[i];
-      var cnt = countFor(c);
-      html += '<button type="button" class="chip' + (cnt ? "" : " dim") + '" data-idx="' + i +
-              '" data-key="' + c + '">' +
-              '<i style="background:' + c + '"></i>' + esc(name) +
-              '<span class="n">' + cnt + '</span></button>';
+      var li = labelOrder[oi];
+      var lname = (labels[li] || "").trim();
+      if (!lname) continue;
+      var lc = NOTE_COLORS[li];
+      rows.push({ idx: li, name: lname, key: lc, cnt: countFor(lc) });
     }
-    if (hasNoColorNotes()) {
-      var nc = countFor("__none__");
-      html += '<button type="button" class="chip' + (nc ? "" : " dim") +
-              '" data-key="__none__"><i class="none"></i>未设<span class="n">' + nc + '</span></button>';
+    var hasNone = hasNoColorNotes();
+    var noneCnt = hasNone ? countFor("__none__") : 0;
+    var sigParts = [fkey || ""];
+    for (var si = 0; si < rows.length; si++) sigParts.push(rows[si].idx + ":" + rows[si].name + ":" + rows[si].cnt);
+    sigParts.push(hasNone ? ("none:" + noneCnt) : "none:-");
+    var sig = sigParts.join("|");
+
+    /* 内容没变就直接返回，绝不重建 DOM。
+       输入框兼做搜索：每敲一个键都会走 render()，而重建会让 .chip.on 从「无背景」
+       再淡入一遍（CSS 有 .3s 过渡），看起来就是每按一下键那颗 chip 被按了一下。 */
+    if (sig === _stripSig && stripEl.querySelectorAll(".chip").length) return;
+    _stripSig = sig;
+
+    /* 重画会把 chip 全部换新，正在拖的那颗会变成孤儿：先干净收掉这次拖动（不写盘） */
+    if (_chipPtr || _chipDrag) {
+      _chipPtr = null;
+      _chipDrag = null;
+      if (_chipGhost) { try { _chipGhost.parentNode.removeChild(_chipGhost); } catch (e0) { } _chipGhost = null; }
+      stopChipAutoScroll();
+      document.body.classList.remove('chip-dragging');
+    }
+
+    /* 选中态（.on）与选中色一律**写进 HTML**，插入后不再改 class/style：
+       否则新元素会从「无背景」过渡到「有背景」，每次重建都要闪一下。 */
+    var fk = fkey || "";
+    var html = '<button type="button" class="chip' + (fk === "" ? " on" : "") + '" data-key="">全部</button>';
+    for (var rj = 0; rj < rows.length; rj++) {
+      var rr = rows[rj];
+      var isOn = (fk === rr.key);
+      var cls = "chip" + (isOn ? " on" : (rr.cnt ? "" : " dim"));
+      var st = isOn ? ' style="background:' + rr.key + '3d;border-color:' + rr.key + '8f;color:' + rr.key + '"' : "";
+      html += '<button type="button" class="' + cls + '" data-idx="' + rr.idx +
+              '" data-key="' + rr.key + '"' + st + '>' +
+              '<i style="background:' + rr.key + '"></i>' + esc(rr.name) +
+              '<span class="n">' + rr.cnt + '</span></button>';
+    }
+    if (hasNone) {
+      var onN = (fk === "__none__");
+      var clsN = "chip" + (onN ? " on" : (noneCnt ? "" : " dim"));
+      html += '<button type="button" class="' + clsN + '" data-key="__none__">' +
+              '<i class="none"></i>未设<span class="n">' + noneCnt + '</span></button>';
     }
     var _sc = stripEl.scrollLeft;   // 重画会把 scrollLeft 打回 0，先记下来，画完再放回去
     stripEl.innerHTML = html;
@@ -1834,13 +1868,6 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
 
     Array.prototype.forEach.call(stripEl.querySelectorAll(".chip"), function (el) {
       var k = el.getAttribute("data-key");
-      var on = (k === (fkey || ""));
-      if (on) { el.classList.add("on"); el.classList.remove("dim"); }   // 选中时不能又被 .dim 压暗，否则看不出在筛什么
-      if (k && k !== "__none__" && on) {
-        el.style.background = k + "3d";        // 该色 24% 底
-        el.style.borderColor = k + "8f";       // 该色 56% 边
-        el.style.color = k;
-      }
       el.onclick = function () {
         if (Date.now() - _chipNoClick < 300) return;   // 刚拖完松手：这次 click 不该再切筛选
         setFilter(k || null);
@@ -2904,8 +2931,15 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     };
     textEl.addEventListener("blur", function () { finish(true); }, { once: true });
     textEl.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") { e.preventDefault(); finish(false); textEl.blur(); }
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish(true); textEl.blur(); }
+      if (e.key === "Escape") { e.preventDefault(); finish(false); textEl.blur(); e.stopPropagation(); return; }
+      // Enter = 结束编辑，Shift+Enter = 换行 —— 与新建输入框同一套手感。
+      // 输入法组词时按下 Enter 是「上屏」，不能当成提交（isComposing / 229）。
+      if (e.key === "Enter" && !e.shiftKey) {
+        if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
+        e.preventDefault();
+        finish(true);
+        textEl.blur();
+      }
       e.stopPropagation();
     });
   }
@@ -4174,6 +4208,9 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
   }
   function dragIsInternal() {
     try {
+      // C# 发起系统拖拽期间（__sysDrag=1）：整段拖拽都算「自己的」。
+      // 只靠时间戳挡不住「拖出去转一圈再拖回来」，那条路会走页面的导入逻辑、复制出一份。
+      if (window.__sysDrag) return true;
       if (window.__ourDragActive && (Date.now() - (window.__ourDragAt || 0)) < 8000) return true;
       return !!(window.__internalDragAt && (Date.now() - window.__internalDragAt) < 2500);
     } catch (e) { return false; }
@@ -4619,6 +4656,9 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     _dropDoneAt = Date.now();
     var dt = e.dataTransfer;
     if (!dt) return;
+    // C# 的系统拖拽还没结束（__sysDrag=1）：落回页面的就是自己的附件，一律不收。
+    // 旧做法只靠 __internalDragAt 的 2.5 秒窗口，拖出去停一会儿再拖回来就挡不住了。
+    try { if (window.__sysDrag) return; } catch (eS) { }
     // 自己拖出去的附件又被拖回来：忽略，否则会复制出一份新笔记
     try {
       if (dt.types && Array.prototype.indexOf.call(dt.types, "TempNotesInternal") >= 0) return;

@@ -1140,14 +1140,21 @@ namespace TempNotes2
             // 内部标记：万一把文件又拖回自己的窗口，页面要知道「这是我自己的附件」，别当成新文件再存一份
             try { data.SetData("TempNotesInternal", true); } catch { }
             // 页面里的兜底：Chromium 不一定把自定义剪贴板格式透到 DataTransfer.types，
-            // 所以在发起系统拖拽前给页面打个时间戳，短时间内落回一律忽略。
-            try { SafeEval("window.__internalDragAt=Date.now();"); } catch { }
+            // 所以在发起系统拖拽前给页面打时间戳，**并把整段拖拽标记成「自己的」**。
+            // 只靠 2.5 秒时间戳挡不住「拖出去停一会儿再拖回来」——那条路会走页面的导入逻辑，
+            // 复制出一份一模一样的附件（用户实测）。__sysDrag 在 DoDragDrop 返回时清掉。
+            try { SafeEval("window.__internalDragAt=Date.now(); window.__sysDrag=1;"); } catch { }
             try
             {
                 DragDrop.DoDragDrop(w, data, DragDropEffects.Copy);
                 _log("拖出完成: " + path);
             }
             catch (Exception ex) { _log("拖出异常: " + ex.Message); }
+            finally
+            {
+                // 拖拽结束（成功/取消/异常都要清）：否则下一次真正从资源管理器拖文件进来会被误吞
+                try { SafeEval("window.__sysDrag=0;"); } catch { }
+            }
         }
 
         private Window CreateWindow(Entry e)

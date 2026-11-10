@@ -1001,7 +1001,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2812 数据一注一文件 / 删除墓碑同步 / 目录监听（首个事件即刷 + 1 秒兜底轮询 + 编辑拖动不打断）");
+                log("版本 2831 编辑框 Enter 结束 / Shift+Enter 换行");
             _store = new Store();
                 _store.Load();
                 log("Store 载入，笔记 " + _store.Db.Notes.Count + " 条，根目录 " + _store.Root);

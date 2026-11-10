@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-09-2794";
+var APPJS_VER = "2026-11-10-2831";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -37,6 +37,14 @@ var APPJS_VER = "2026-11-09-2794";
   var batchMode = false;
   var batchSel = {};
   var query = "";
+  /* v2813：优先级名称（= 颜色的名字，最多 5 字）与筛选态。
+     labels 的索引与 NOTE_COLORS 一一对应，由 C# 的 labels.json 推下来（window.api.setState）；
+     fkey 是纯前端视图态：null=全部 / 颜色 hex / "__none__"=没设优先级，绝不落盘。 */
+  var labels = ["", "", "", "", "", "", "", "", "", ""];
+  var fkey = null;
+  var stripEl = document.getElementById("fstrip");
+  var _nmTimer = 0;        // 设置里改名后重绘卡片的防抖
+  var _fDragPt = null;     // 筛选视图里「想拖」的起点（用来弹提醒）
 var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, closeToTray: false };
   var lastOrderSnap = null;
   var undoStopTimer = null;
@@ -58,6 +66,32 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     if (tries > 60) return;
     setTimeout(function () { sendRetry(m, tries + 1); }, 50);
   }
+
+  /* v2812：把「用户正在编辑 / 正在拖拽」告诉 C#。
+     C# 那边每秒会扫一次磁盘，但绝不能在用户打字、拖卡片、输入法组词时重绘，
+     否则光标会跳、拖动会断。这里只在状态真的变化时才发一条消息，开销可忽略。 */
+  var _busySent = false;
+  function _isEditingNow() {
+    var a = document.activeElement;
+    if (!a) return false;
+    if (a.tagName === "TEXTAREA" || a.tagName === "INPUT") return true;
+    try { return !!(a.closest && a.closest("[contenteditable='true']")); } catch (e) { return false; }
+  }
+  function _syncBusy() {
+    var busy = false;
+    try { busy = _isEditingNow() || !!_sortDragging || !!_attDrag; } catch (e) { busy = _isEditingNow(); }
+    if (busy === _busySent) return;
+    _busySent = busy;
+    try { send("busy|" + (busy ? "1" : "0")); } catch (e2) { }
+  }
+  function _syncBusySoon() { setTimeout(_syncBusy, 40); }
+  document.addEventListener("focusin", _syncBusySoon, true);
+  document.addEventListener("focusout", _syncBusySoon, true);
+  document.addEventListener("compositionstart", _syncBusySoon, true);
+  document.addEventListener("compositionend", _syncBusySoon, true);
+  document.addEventListener("mouseup", _syncBusySoon, true);
+  document.addEventListener("keyup", function () { setTimeout(_syncBusy, 250); }, true);
+  window.addEventListener("blur", function () { setTimeout(_syncBusy, 120); });
 
   if (window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener("message", function (e) {
@@ -1215,6 +1249,87 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     "#8FA3AE"   // 灰
   ];
 
+  /* ---------- 优先级名称（v2813） ----------
+     名字属于「颜色」，不属于某一条笔记：同一颜色的待办永远显示同一个名字，改名全体生效，
+     用户理解成「给优先级条起个名字」。所以按优先级筛选只有一个维度，不会出现同名不同色的歧义。 */
+  function colorIndex(hex) {
+    if (!hex) return -1;
+    var u = String(hex).toUpperCase();
+    for (var i = 0; i < NOTE_COLORS.length; i++)
+      if (NOTE_COLORS[i].toUpperCase() === u) return i;
+    return -1;
+  }
+
+  function labelOf(hex) {
+    var i = colorIndex(normColor(hex));
+    return i < 0 ? "" : (labels[i] || "");
+  }
+
+  function hasLabels() {
+    for (var i = 0; i < NOTE_COLORS.length; i++) if ((labels[i] || "").trim()) return true;
+    return false;
+  }
+
+  /* 一个字都不许带空白、最长 5 字（C# 侧同样截断，这里只是让输入框立刻听话） */
+  function clipName(s) {
+    s = String(s == null ? "" : s).replace(/\s+/g, "");
+    return s.length > 5 ? s.slice(0, 5) : s;
+  }
+
+  function takeLabels(arr) {
+    var out = ["", "", "", "", "", "", "", "", "", ""];
+    if (arr && arr.length)
+      for (var i = 0; i < out.length && i < arr.length; i++) out[i] = clipName(arr[i]);
+    return out;
+  }
+
+  /* 筛选条里 chip 的先后顺序（0..9 的一个排列）。存在 labels.json 里，两端共用。 */
+  var labelOrder = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  function takeOrder(arr) {
+    var seen = {}, out = [];
+    if (arr && arr.length) {
+      for (var i = 0; i < arr.length; i++) {
+        var v = parseInt(arr[i], 10);
+        if (v >= 0 && v < NOTE_COLORS.length && !seen[v]) { seen[v] = 1; out.push(v); }
+      }
+    }
+    for (var j = 0; j < NOTE_COLORS.length; j++) if (!seen[j]) out.push(j);
+    return out;
+  }
+  function saveOrder() {
+    send("labelorder|" + labelOrder.join(","));
+  }
+
+  function filterName(k) {
+    if (k === "__none__") return "未设优先级";
+    return labelOf(k) || "这个颜色";
+  }
+
+  function matchFilter(n) {
+    if (!fkey) return true;
+    var cc = normColor(n.color) || "";
+    if (fkey === "__none__") return !cc;
+    return cc.toUpperCase() === fkey.toUpperCase();
+  }
+
+  /* chip 上的数字 = 这一色「还没完成」的条数（已完成的也算在筛选结果里，但不计数） */
+  function countFor(key) {
+    var c = 0;
+    for (var i = 0; i < notes.length; i++) {
+      var n = notes[i];
+      if (n.status === 1) continue;
+      var cc = normColor(n.color) || "";
+      if (key === "__none__") { if (!cc) c++; }
+      else if (cc && cc.toUpperCase() === key) c++;
+    }
+    return c;
+  }
+
+  function hasNoColorNotes() {
+    for (var i = 0; i < notes.length; i++) if (!normColor(notes[i].color)) return true;
+    return false;
+  }
+
   /* ---------- 拖到边界的提示色（前端本地偏好，存 localStorage） ----------
      默认暖红 #FF6F61。CSS 侧用 --edge-r/g/b 三个分量拼 rgba，
      这样渐变、边框、外发光都跟着一个色走，不用改多处。 */
@@ -1309,7 +1424,55 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     st.setProperty("--muted", p.muted);
     st.setProperty("--accent", p.accent);
     send("__setbg|" + p.bg);
+    send("__setaccent|" + p.accent);
   }
+  /* 优先级名称：名字属于「颜色」而不是某一条笔记 —— 同色的卡共用一个名字，改一次全变。
+     留空 = 这个优先级不显示标签（也就是不露脸、不进筛选条）。 */
+  function renderLabelGrid() {
+    var host = document.getElementById("labelGrid");
+    if (!host) return;
+    host.innerHTML = NOTE_COLORS.map(function (c, i) {
+      return '<div class="lgrow"><i style="background:' + c + '"></i>' +
+             '<input class="lgin" type="text" data-i="' + i + '" spellcheck="false" ' +
+             'autocomplete="off" placeholder="' + (i + 1) + ' 号色" value="' + esc(labels[i] || "") + '">' +
+             '</div>';
+    }).join("");
+    host.querySelectorAll(".lgin").forEach(function (el) {
+      var i = parseInt(el.getAttribute("data-i"), 10);
+      // v2829：这里以前写死 maxlength="5"，但中文输入法上屏前的拼音也算长度 ——
+      // "xuesheng" 8 个字母直接超限，浏览器就不让开始输入（表现为"根本打不出字"），
+      // "kaifa" 5 个字母刚好卡在边上。所以上限只能在「上屏之后」按字数算，见 clipName。
+      var ime = false;
+      var commit = function () {
+        var raw = el.value;
+        var v = clipName(raw);
+        if (v !== raw) el.value = v;
+        if ((labels[i] || "") === v) return;
+        var old = labels[i] || "";
+        labels[i] = v;
+        send("label|" + i + "|" + encodeURIComponent(v));
+        // 正在筛的颜色被清掉名字 → 它的 chip 会消失，视图必须回落，否则就「筛着一样看不见的东西」
+        if (!v && fkey === NOTE_COLORS[i]) {
+          fkey = null;
+          showHint("「" + (old || "这个优先级") + "」的名字清空了，筛选已回到全部");
+        }
+        renderStrip();
+        render();
+      };
+      el.addEventListener("compositionstart", function () { ime = true; });
+      el.addEventListener("compositionend", function () { ime = false; commit(); });
+      el.addEventListener("input", function (e) {
+        // 拼音还没上屏时不要动它：一旦此刻回写 / 重画，输入法候选框会被打断
+        if (ime || e.isComposing) return;
+        commit();
+      });
+      el.addEventListener("blur", function () { ime = false; commit(); });
+      el.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); el.blur(); }
+      });
+    });
+  }
+
   function renderPalettes() {
     var host = document.getElementById("palettes");
     if (!host) return;
@@ -1400,6 +1563,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   var _dropTargetEl = null;
   var _lastDragOverAt = 0;
   var _dragFileCount = 1;
+var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还是文字/链接
   var _topScrollRaf = 0;
   var _wheelTarget = 0;      // 热区转发的滚轮：累计目标位置
   var _wheelRaf = 0;
@@ -1619,10 +1783,362 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   /* ---------- 渲染 ---------- */
   var _addPending = false;   // 按 Enter 新建：等这次 setNotes 回来做「滑到顶 + 闪一下」
   var _flipPrev = null;
+  /* 筛选条：只有「至少一个优先级起了名字」才出现 —— 没起名字时页面跟以前完全一样。
+     chip 数字只数没完成的；0 条的 chip 留着变暗，位置不跳。 */
+  var _stripSig = "";   // 上次画出来的内容指纹：没变就一颗 chip 都不重建
+  function renderStrip() {
+    if (!stripEl) return;
+    if (!stripEl._wheel) {
+      stripEl._wheel = 1;
+      // 竖滚轮 → 横向滚动（这一条永远不换行）
+      stripEl.addEventListener("wheel", function (e) {
+        if (stripEl.scrollWidth > stripEl.clientWidth) {
+          e.preventDefault();
+          stripEl.scrollLeft += (e.deltaY || 0);
+        }
+      }, { passive: false });
+    }
+    // 正在筛的颜色如果被改名清空了，就没有对应 chip 可高亮 —— 直接回「全部」
+    if (fkey && fkey !== "__none__" && !labelOf(fkey)) fkey = null;
+
+    if (!hasLabels()) {
+      if (stripEl.classList.contains("on") || stripEl.innerHTML) {
+        stripEl.classList.remove("on");
+        stripEl.innerHTML = "";
+      }
+      _stripSig = "";
+      return;
+    }
+    stripEl.classList.add("on");
+
+    // 先把要画的东西算干净（顺序 / 名字 / 条数），顺便拼一个内容指纹
+    var rows = [];
+    for (var oi = 0; oi < labelOrder.length; oi++) {
+      var li = labelOrder[oi];
+      var lname = (labels[li] || "").trim();
+      if (!lname) continue;
+      var lc = NOTE_COLORS[li];
+      rows.push({ idx: li, name: lname, key: lc, cnt: countFor(lc) });
+    }
+    var hasNone = hasNoColorNotes();
+    var noneCnt = hasNone ? countFor("__none__") : 0;
+    var sigParts = [fkey || ""];
+    for (var si = 0; si < rows.length; si++) sigParts.push(rows[si].idx + ":" + rows[si].name + ":" + rows[si].cnt);
+    sigParts.push(hasNone ? ("none:" + noneCnt) : "none:-");
+    var sig = sigParts.join("|");
+
+    /* 内容没变就直接返回，绝不重建 DOM。
+       输入框兼做搜索：每敲一个键都会走 render()，而重建会让 .chip.on 从「无背景」
+       再淡入一遍（CSS 有 .3s 过渡），看起来就是每按一下键那颗 chip 被按了一下。 */
+    if (sig === _stripSig && stripEl.querySelectorAll(".chip").length) return;
+    _stripSig = sig;
+
+    /* 重画会把 chip 全部换新，正在拖的那颗会变成孤儿：先干净收掉这次拖动（不写盘） */
+    if (_chipPtr || _chipDrag) {
+      _chipPtr = null;
+      _chipDrag = null;
+      if (_chipGhost) { try { _chipGhost.parentNode.removeChild(_chipGhost); } catch (e0) { } _chipGhost = null; }
+      stopChipAutoScroll();
+      document.body.classList.remove('chip-dragging');
+    }
+
+    /* 选中态（.on）与选中色一律**写进 HTML**，插入后不再改 class/style：
+       否则新元素会从「无背景」过渡到「有背景」，每次重建都要闪一下。 */
+    var fk = fkey || "";
+    var html = '<button type="button" class="chip' + (fk === "" ? " on" : "") + '" data-key="">全部</button>';
+    for (var rj = 0; rj < rows.length; rj++) {
+      var rr = rows[rj];
+      var isOn = (fk === rr.key);
+      var cls = "chip" + (isOn ? " on" : (rr.cnt ? "" : " dim"));
+      var st = isOn ? ' style="background:' + rr.key + '3d;border-color:' + rr.key + '8f;color:' + rr.key + '"' : "";
+      html += '<button type="button" class="' + cls + '" data-idx="' + rr.idx +
+              '" data-key="' + rr.key + '"' + st + '>' +
+              '<i style="background:' + rr.key + '"></i>' + esc(rr.name) +
+              '<span class="n">' + rr.cnt + '</span></button>';
+    }
+    if (hasNone) {
+      var onN = (fk === "__none__");
+      var clsN = "chip" + (onN ? " on" : (noneCnt ? "" : " dim"));
+      html += '<button type="button" class="' + clsN + '" data-key="__none__">' +
+              '<i class="none"></i>未设<span class="n">' + noneCnt + '</span></button>';
+    }
+    var _sc = stripEl.scrollLeft;   // 重画会把 scrollLeft 打回 0，先记下来，画完再放回去
+    stripEl.innerHTML = html;
+    stripEl.scrollLeft = _sc;
+
+    Array.prototype.forEach.call(stripEl.querySelectorAll(".chip"), function (el) {
+      var k = el.getAttribute("data-key");
+      el.onclick = function () {
+        if (Date.now() - _chipNoClick < 300) return;   // 刚拖完松手：这次 click 不该再切筛选
+        setFilter(k || null);
+      };
+    });
+    bindChipDrag();
+  }
+
+  /* ---------- chip 按住拖动换顺序 ----------
+     跟卡片拖拽是一套心智：按住、移动超过一点才进入拖动，松手落位。
+     只有「有名字的颜色」能挪；「全部」永远在开头，「未设」永远在末尾。 */
+  var _chipDrag = null;
+  var _chipNoClick = 0;   // 刚拖完的时间戳，用来吞掉那次误触的 click
+  var _chipGhost = null;  // 跟着光标走的拖影
+  var _chipAutoRaf = 0;   // 拖到筛选条边上时的自动横向滚动
+  var _chipAutoDir = 0;   // -1 往左 / +1 往右 / 0 不动
+  var _chipLastX = 0;
+  /* 让位动画：DOM 一动，先把每颗 chip 用 transform 拉回它原来的位置，再放回去 ——
+     观感跟列表里卡片拖动时的让位一致，而不是"啪"地跳一格。 */
+  function flipChips(move) {
+    var nodes = Array.prototype.slice.call(stripEl.querySelectorAll(".chip"));
+    var first = [];
+    var i;
+    for (i = 0; i < nodes.length; i++) first.push(nodes[i].getBoundingClientRect());
+    move();
+    for (i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n === _chipDrag) continue;            // 被拖的那颗由系统拖影跟着光标，不拉回去
+      var a = first[i], b = n.getBoundingClientRect();
+      var dx = a.left - b.left, dy = a.top - b.top;
+      if (!dx && !dy) continue;
+      n.style.transition = "none";
+      n.style.transform = "translate(" + dx + "px," + dy + "px)";
+      void n.offsetWidth;                        // 强制回流，让下面这帧从"原位"开始
+      n.style.transition = "transform .34s cubic-bezier(.22,.72,.28,1)";
+      n.style.transform = "";
+    }
+  }
+  /* 拖动用指针事件自己做，不用浏览器原生拖放：
+     原生拖放时"能不能放下"的光标由浏览器决定，经过别的 chip 的边框、卡片、列表空白处
+     就会冒出禁止图标，而且 dropEffect 在脚本里改不动。自己拖光标就完全可控。 */
+  var _chipPtr = null;      // 按住但还没拖起来
+  function bindChipDrag() {
+    if (stripEl._dragBound) return;
+    stripEl._dragBound = 1;
+
+    stripEl.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0 || e.isPrimary === false) return;
+      var el = e.target.closest ? e.target.closest(".chip") : null;
+      if (!el || !el.getAttribute("data-idx")) return;      // 全部 / 未设 不参与
+      _chipPtr = { el: el, x: e.clientX, y: e.clientY, on: false, id: e.pointerId, homeNext: el.nextSibling };
+    });
+
+    document.addEventListener("pointermove", function (e) {
+      var p = _chipPtr;
+      if (!p) return;
+      if (!p.on) {
+        if (Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) < 5) return;   // 5px 内算点击，不打断切筛选
+        p.on = true;
+        _chipDrag = p.el;
+        p.el.classList.add('dragging');
+        document.body.classList.add('chip-dragging');
+        try { p.el.setPointerCapture(p.id); } catch (e0) { }
+        /* 原生拖放时浏览器自带一个跟手的拖影；自己拖就得造一个：那颗 chip 的复印件跟着光标走,
+           原位那颗淡下去当占位,让位动画照旧 */
+        var r0 = p.el.getBoundingClientRect();
+        p.gx = e.clientX - r0.left;
+        p.gy = e.clientY - r0.top;
+        _chipGhost = p.el.cloneNode(true);
+        _chipGhost.removeAttribute('data-idx');
+        _chipGhost.className = 'chip chip-ghost';
+        /* 拖影在 body 里（不在筛选条内），拿不到 .fstrip .chip 的样式，
+           所以把原 chip 的实际样式抄过来，保证长得一模一样 */
+        var cs = getComputedStyle(p.el);
+        ['display','alignItems','justifyContent','gap','height','padding','borderRadius','borderWidth','borderStyle','borderColor','background','color','fontSize','lineHeight','fontWeight','fontFamily','letterSpacing','whiteSpace','boxSizing','fontVariantNumeric'].forEach(function(k){
+          if (cs[k]) _chipGhost.style[k] = cs[k];
+        });
+        _chipGhost.style.position = 'fixed';
+        _chipGhost.style.margin = '0';
+        _chipGhost.style.left = r0.left + 'px';
+        _chipGhost.style.top = r0.top + 'px';
+        _chipGhost.style.width = r0.width + 'px';
+        _chipGhost.style.pointerEvents = 'none';
+        _chipGhost.style.zIndex = '99999';
+        _chipGhost.style.transition = 'none';
+        _chipGhost.style.boxShadow = '0 10px 22px rgba(0,0,0,.55),0 2px 5px rgba(0,0,0,.45)';
+        p.el._ghostBase = { left: r0.left, top: r0.top };
+        _chipGhost.style.transform = 'translate(0px,0px) scale(1.04)';
+        document.body.appendChild(_chipGhost);
+      }
+      if (e.cancelable) e.preventDefault();     // 别顺手选到文字
+      if (_chipGhost) {
+        _chipGhost.style.transform = 'translate(' + (e.clientX - p.x) + 'px,' + (e.clientY - p.y) + 'px) scale(1.04)';
+      }
+      moveChip(e.clientX, e.clientY);
+    }, { passive: false });
+
+    /* 收尾：先让那颗拖影自己滑到落点、缩回原大、投影变浅，再把它收掉。
+       直接 remove 会"啪"一下消失，看着像归位太快。 */
+    function settleGhost(el, onDone) {
+      var g = _chipGhost;
+      var base = (el && el._ghostBase) || null;
+      var finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        if (g && g.parentNode) g.parentNode.removeChild(g);
+        if (_chipGhost === g) _chipGhost = null;
+        if (onDone) onDone();
+      }
+      if (!g || !base || !el) { finish(); return; }
+      var slot = el.getBoundingClientRect();
+      g.style.transition = "transform .44s cubic-bezier(.22,.72,.28,1), box-shadow .44s ease";
+      g.style.transform = "translate(" + (slot.left - base.left) + "px," + (slot.top - base.top) + "px) scale(1)";
+      g.style.boxShadow = "0 2px 6px rgba(0,0,0,.35)";
+      g.addEventListener("transitionend", finish, { once: true });
+      setTimeout(finish, 480);
+    }
+
+    function endChipDrag(e) {
+      var p = _chipPtr;
+      if (!p) return;
+      _chipPtr = null;
+      document.body.classList.remove("chip-dragging");
+      try { p.el.releasePointerCapture(p.id); } catch (e0) { }
+      stopChipAutoScroll();
+      if (!p.on) {                       // 只是点了一下，交给 click 去切筛选
+        if (_chipGhost) { try { _chipGhost.parentNode.removeChild(_chipGhost); } catch (e0) { } _chipGhost = null; }
+        return;
+      }
+      _chipNoClick = Date.now();         // 吞掉松手后紧跟的那一次 click
+      if (e && e.cancelable) e.preventDefault();
+      var el = p.el;
+      settleGhost(el, function () {
+        el.classList.remove("dragging");
+        commitChipOrder();
+      });
+    }
+
+    /* 拖动中被打断（Esc / 窗口失焦 / 页面重画）：回到按下时的位置，不写盘 */
+    function cancelChipDrag() {
+      var p = _chipPtr;
+      _chipPtr = null;
+      stopChipAutoScroll();
+      document.body.classList.remove("chip-dragging");
+      if (!p || !p.on) { return; }
+      var el = p.el;
+      _chipNoClick = Date.now();
+      flipChips(function () {
+        if (p.homeNext && p.homeNext.parentNode === stripEl) stripEl.insertBefore(el, p.homeNext);
+        else stripEl.appendChild(el);
+      });
+      settleGhost(el, function () {
+        el.classList.remove("dragging");
+        renderStrip();               // 顺序没变，按现有标签重画一遍即可
+      });
+    }
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      if (!_chipPtr || !_chipPtr.on) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelChipDrag();
+    }, true);
+    window.addEventListener("blur", function () {
+      if (_chipPtr && _chipPtr.on) cancelChipDrag();
+    });
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden && _chipPtr && _chipPtr.on) cancelChipDrag();
+    });
+    document.addEventListener("pointerup", endChipDrag);
+    document.addEventListener("pointercancel", endChipDrag);
+  }
+
+  /* 把被拖的 chip 插到光标所在那颗的前面/后面，其余 chip 用 FLIP 让位 */
+  function moveChip(x, y) {
+    var el = _chipDrag;
+    if (!el) return;
+    _chipLastX = x;
+    /* 拖到筛选条左右边缘就自动横向滚：不然超出可视区的 chip 永远够不着 */
+    var sr = stripEl.getBoundingClientRect();
+    var edge = 34;
+    _chipAutoDir = (x < sr.left + edge) ? -1 : ((x > sr.right - edge) ? 1 : 0);
+    startChipAutoScroll();
+    var under = document.elementFromPoint(x, y);
+    under = under && under.closest ? under.closest(".chip") : null;
+    if (!under || under === el || !under.getAttribute("data-idx")) return;
+    var r = under.getBoundingClientRect();
+    var ref = (x > r.left + r.width / 2) ? under.nextSibling : under;
+    if (ref === el || el.nextSibling === ref) return;     // 已经在这一格，别再动（否则会抖）
+    flipChips(function () { stripEl.insertBefore(el, ref); });
+  }
+
+
+  /* 拖 chip 时贴边自动滚：每帧挪一点，并重新算一次"现在光标压在哪颗上面" */
+  function startChipAutoScroll() {
+    if (_chipAutoRaf) return;
+    _chipAutoRaf = requestAnimationFrame(chipAutoTick);
+  }
+  function stopChipAutoScroll() {
+    if (_chipAutoRaf) { cancelAnimationFrame(_chipAutoRaf); _chipAutoRaf = 0; }
+    _chipAutoDir = 0;
+  }
+  function chipAutoTick() {
+    _chipAutoRaf = 0;
+    if (!_chipDrag) { _chipAutoDir = 0; return; }
+    if (_chipAutoDir) {
+      var before = stripEl.scrollLeft;
+      stripEl.scrollLeft = before + _chipAutoDir * 8;
+      if (stripEl.scrollLeft !== before) moveChip(_chipLastX, stripEl.getBoundingClientRect().top + 11);
+    }
+    _chipAutoRaf = requestAnimationFrame(chipAutoTick);
+  }
+  /* 松手：从 DOM 读回顺序，把「有名字的那些槽位」按新先后填回去，没名字的位置原样不动 */
+  function commitChipOrder() {
+    var el = _chipDrag;
+    _chipDrag = null;
+    if (el) el.classList.remove("dragging");
+    var shown = [], nodes = stripEl.querySelectorAll(".chip[data-idx]"), i;
+    for (i = 0; i < nodes.length; i++) shown.push(parseInt(nodes[i].getAttribute("data-idx"), 10));
+    var namedOld = [];
+    for (i = 0; i < labelOrder.length; i++) if ((labels[labelOrder[i]] || "").trim()) namedOld.push(labelOrder[i]);
+    if (shown.length !== namedOld.length) return;         // 数量对不上（中途有名字被清空）：不写盘，等下次
+    var changed = false;
+    for (i = 0; i < shown.length; i++) if (shown[i] !== namedOld[i]) { changed = true; break; }
+    if (!changed) return;
+    var it = 0, out = [];
+    for (i = 0; i < labelOrder.length; i++) {
+      var v = labelOrder[i];
+      out.push((labels[v] || "").trim() ? shown[it++] : v);
+    }
+    labelOrder = takeOrder(out);
+    saveOrder();
+    renderStrip();
+  }
+
+  /* 切筛选 = 换视图：已勾选的卡片立刻作废（否则会批量操作到看不见的卡片） */
+  function setFilter(k) {
+    k = k || null;
+    if (k === fkey) return;
+    fkey = k;
+    batchSel = {};
+    /* 筛选视图里不能拖排序。Sortable 的 disabled 是初始化时设的，不会自己跟着 fkey 变，
+       所以每次切筛选都得重新下发一遍 —— 否则「按住卡片还能拖」，跟批量模式的行为不统一 */
+    sortables.forEach(function (x) { try { x.option("disabled", !!fkey || batchMode); } catch (e0) { } });
+    try { if (wrapEl) wrapEl.scrollTop = 0; } catch (e0) { }
+    render();
+    fadeInList();
+    updateBatchCnt();
+  }
+
+  /* 换视图时整列淡入淡出（不再弹 toast）：动画慢一点，让人看清内容换了，而不是"闪一下" */
+  var _fadeTimer = 0;
+  function fadeInList() {
+    if (!listEl) return;
+    listEl.classList.remove("switching");
+    void listEl.offsetWidth;            // 强制重排，让同一段动画能重放
+    listEl.classList.add("switching");
+    clearTimeout(_fadeTimer);
+    _fadeTimer = setTimeout(function () { listEl.classList.remove("switching"); }, 700);
+  }
+
   function visibleNotes() {
-    if (!query) return notes;
-    var terms = searchTerms(query);
-    return notes.filter(function (n) { return noteMatches(n, terms); });
+    var arr = notes;
+    if (query) {
+      var terms = searchTerms(query);
+      arr = arr.filter(function (n) { return noteMatches(n, terms); });
+    }
+    if (fkey) arr = arr.filter(matchFilter);
+    return arr;
   }
 
   function render(animate) {
@@ -1645,16 +2161,18 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     // 拖动时根本过不去（单列表 + onMove 在 forceFallback 下拦不住，实测仍会插入）。
     var cardHtml = function (n) {
       var done = n.status === 1;
+      var cc = normColor(n.color);
+      var tname = cc ? labelOf(cc) : "";
       var atts = (n.atts && n.atts.length)
         ? '<div class="atts">' + n.atts.map(attHtml).join("") + '</div>' : "";
 
       return '<div class="note' + (done?" done":"") + (n.id===selectedId?" selected":"") +
              '" data-id="' + esc(n.id) + '" data-done="' + (done?"1":"0") + '">' +
-               (function () {
-                 var cc = normColor(n.color);
-                 return '<div class="' + (cc ? "bar has" : "bar") + '" data-act="color" ' +
-                        (cc ? 'style="background:' + esc(cc) + '"' : '') + '></div>';
-               })() +
+               (tname
+                 ? '<span class="ntag" style="background:' + esc(cc) + '">' + esc(tname) + '</span>'
+                 : "") +
+               '<div class="' + (cc ? "bar has" : "bar") + '" data-act="color" ' +
+               (cc ? 'style="background:' + esc(cc) + '"' : '') + '></div>' +
                '<div class="ring' + (done?" on":"") + '" data-act="toggle"></div>' +
                '<div class="chk' + (batchSel[n.id]?" on":"") + '" data-act="check">' + (batchSel[n.id]?"✓":"") + '</div>' +
                (done ? "" :
@@ -1697,9 +2215,25 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     if (!arr.length) {
       var e = document.createElement("div");
       e.className = "empty";
-      e.textContent = query ? ('没有匹配「' + query + '」的笔记') : "还没有笔记。上面输入框打点字，按 Enter 就有了。";
+      if (fkey) {
+        // 筛选下的空态：要说清楚「是筛选过出来的空」，并给一个立刻能按的出口
+        e.className = "empty filtered";
+        var sp = document.createElement("span");
+        sp.textContent = "这个筛选下没有待办「" + filterName(fkey) + "」";
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = "看全部";
+        b.onmousedown = function (ev) { ev.preventDefault(); };
+        b.onclick = function (ev) { ev.stopPropagation(); setFilter(null); };
+        e.appendChild(sp);
+        e.appendChild(b);
+      } else {
+        e.textContent = query ? ('没有匹配「' + query + '」的笔记') : "还没有笔记。上面输入框打点字，按 Enter 就有了。";
+      }
       wrapEl.appendChild(e);
     }
+
+    renderStrip();
 
     bind();
     initSortable();
@@ -1754,12 +2288,17 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         var d = oldTop.top - c.getBoundingClientRect().top;
         if (Math.abs(d) < 1) return;
         try {
-          // 用 easeOutQuad（和拖动让位同一套手感）。
-          // 以前是 cubic-bezier(.16,1,.3,1) = easeOutExpo：起步就是最高速，
-          // 点击待办圈后卡片跨区飞过去，540ms 里前 130ms 就跑完 80% 距离，
-          // 视觉上就是「嗖一下」（用户 2026-11-09 反馈）。
+          // 跨区移动（待办 ⇄ 已完成、置顶 ⇄ 待办）的「飞过去」动画。
+          // 2026-11-10 用户反馈：两个方向都「太快」。原因是固定 620ms + easeOutQuad
+          //（起步即最高速），距离一远（比如从待办区顶部飞到已完成区底部，上千像素）
+          // 前 100ms 就跑掉一大半路程，看着像瞬移。
+          // 改法：①时长随距离增长（420~1200ms），近处不变慢、远处不瞬移；
+          //       ②缓动换成 ease-in-out 一类（cubic-bezier(.45,0,.25,1)），
+          //         起步和收尾都慢，中间最快——两头都不突兀。
+          var dist = Math.abs(d);
+          var dur = Math.round(Math.max(420, Math.min(1200, 300 + dist * 0.55)));
           c.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }],
-            { duration: 620, easing: "cubic-bezier(.25,.46,.45,.94)" });
+            { duration: dur, easing: "cubic-bezier(.45,0,.25,1)" });
         } catch (e) { }
       });
     }
@@ -1999,6 +2538,36 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     });
   }
 
+  /* 筛选视图里 Sortable 是 disabled，拖了毫无反应 —— 用户会以为坏了，所以真「开始拖」
+     （位移超过 6px）时给一句提醒。只提醒一次，松手重置。 */
+  document.addEventListener("pointerdown", function (e) {
+    if (!fkey || batchMode || e.button !== 0) return;
+    var t = e.target;
+    if (!t || !t.closest || !t.closest(".note")) return;
+    if (t.closest(".ring") || t.closest(".pin") || t.closest(".chk") ||
+        t.closest(".att") || t.closest(".acts") || t.closest("[contenteditable='true']")) return;
+    _fDragPt = { x: e.clientX, y: e.clientY, shown: false };
+  }, true);
+  document.addEventListener("pointermove", function (e) {
+    if (!_fDragPt || _fDragPt.shown || !fkey) return;
+    if (Math.abs(e.clientX - _fDragPt.x) + Math.abs(e.clientY - _fDragPt.y) < 6) return;
+    _fDragPt.shown = true;
+    showHint("筛选视图里不能拖动 · 先点「全部」再排序");
+  }, true);
+  document.addEventListener("pointerup", function () { _fDragPt = null; }, true);
+  document.addEventListener("pointercancel", function () { _fDragPt = null; }, true);
+
+  /* Esc 逐层退：输入框自己处理（清字/退批量）→ 设置面板自己有 X → 这里只负责退出筛选 */
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (editingId) return;
+    if (document.activeElement === inputEl) return;
+    if (document.querySelector(".panel.on")) return;
+    if (!fkey) return;
+    e.preventDefault();
+    setFilter(null);
+  });
+
   function initSortable() {
     if (sortable) { try { sortable.destroy(); } catch (e) {} sortable = null; }
     sortables.forEach(function (x) { try { x.destroy(); } catch (e) {} });
@@ -2030,7 +2599,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
           return false;
         },
         preventOnFilter: false,
-        disabled: batchMode,
+        // 筛选视图里不许改顺序：拖拽是唯一被禁的操作（完成/置顶/改色/编辑/删除都照常）
+        disabled: batchMode || !!fkey,
         scroll: false,
         group: "zone-" + zone.getAttribute("data-zone"),   // 互不相通：拖不过另一个区
         onStart: function (evt) {
@@ -2152,6 +2722,12 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
           // 指针松在另一个区里 = 这次拖放不成立，卡片要回到原来的位置。
           // 必须在清 _dragZoneEl 之前判断。
           var outZone = pointerOutOfZone(_dragZoneEl);
+          // 跨区落点方向：目标区在本区上方 → 落到本区开头；在下方 → 落到本区末尾。
+          // 拖动过程中占位预览就停在「本区里贴着目标区的那一端」，落点必须跟它一致。
+          var outToTop = false;
+          if (outZone && _dragZoneEl) {
+            try { outToTop = pointerY() < _dragZoneEl.getBoundingClientRect().top; } catch (e0) { }
+          }
           _sortDragging = false; document.body.classList.remove("sorting");
           _dragInst = null;
           updateTopButton();
@@ -2195,11 +2771,18 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
           // 以前这里是交给自己那个 Sortable 实例算落点（会先跑到本区最后一个），
           // 看起来就是「一闪就回去了 / 根本没动画」。
           if (outZone) {
-            // 2026-11-09 用户明确要求：跨区拖不动时**不要回原位**，而是落到「本区最后一个位置」——
-            // 拖动过程中本区其他卡片已经给它让出了这个位置。
-            // （以前是 restoreHomeOrder 按按下时快照回原位，用户不喜欢这个行为。）
+            // 跨区拖不动时**不要回原位**，而是落到「本区里与目标区相邻的那一端」——
+            // 也就是拖动过程中占位预览 / 指示线所在的位置（用户 2026-11-10 定案）。
+            //   目标区在本区下方（置顶→未完成、未完成→已完成）→ 本区末尾
+            //   目标区在本区上方（已完成→未完成、未完成→置顶）→ 本区开头
             try {
-              if (_dragHomeParent && item) _dragHomeParent.appendChild(item);
+              if (_dragHomeParent && item) {
+                if (outToTop && _dragHomeParent.firstChild) {
+                  _dragHomeParent.insertBefore(item, _dragHomeParent.firstChild);
+                } else {
+                  _dragHomeParent.appendChild(item);
+                }
+              }
             } catch (e7) { }
             _dragHomeParent = null;
             _dragHomeNext = null;
@@ -2348,8 +2931,15 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     };
     textEl.addEventListener("blur", function () { finish(true); }, { once: true });
     textEl.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") { e.preventDefault(); finish(false); textEl.blur(); }
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish(true); textEl.blur(); }
+      if (e.key === "Escape") { e.preventDefault(); finish(false); textEl.blur(); e.stopPropagation(); return; }
+      // Enter = 结束编辑，Shift+Enter = 换行 —— 与新建输入框同一套手感。
+      // 输入法组词时按下 Enter 是「上屏」，不能当成提交（isComposing / 229）。
+      if (e.key === "Enter" && !e.shiftKey) {
+        if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
+        e.preventDefault();
+        finish(true);
+        textEl.blur();
+      }
       e.stopPropagation();
     });
   }
@@ -2359,16 +2949,37 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   function openColorPop(e, id) {
     colorTargetId = id;
     var r = e.currentTarget.getBoundingClientRect();
-    colorPop.innerHTML = '<i class="none" data-c="">×</i>' +
-      NOTE_COLORS.map(function (c) { return '<i data-c="' + c + '" style="background:' + c + '"></i>'; }).join("");
-    colorPop.style.left = Math.min(window.innerWidth - 226, r.left + 8) + "px";
-    colorPop.style.top = Math.min(window.innerHeight - 96, r.top) + "px";
+    /* 方案 A：两列清单，圆点 + 优先级名字。10 个一屏放完，没起名字的显示「—」，
+       名字右上角的颜色也是这么来的 —— 面板跟卡片上的书签说的是同一件事。 */
+    var html = '<div class="cp-g">';
+    for (var i = 0; i < NOTE_COLORS.length; i++) {
+      var c = NOTE_COLORS[i], nm = (labels[i] || "").trim();
+      html += '<div class="cp-it" data-c="' + c + '">' +
+              '<b style="background:' + c + '"></b>' +
+              (nm ? '<span>' + esc(nm) + '</span>' : '<span class="e">—</span>') +
+              '</div>';
+    }
+    html += '</div><div class="cp-clr" data-c="">清除这条的优先级</div>';
+    colorPop.innerHTML = html;
     colorPop.classList.add("on");
+    // 先显示出来量到真实尺寸，再夹进窗口，免得窄卡片旁边的面板被下边缘切掉
+    var pw = colorPop.offsetWidth, ph = colorPop.offsetHeight;
+    colorPop.style.left = Math.max(8, Math.min(window.innerWidth - pw - 10, r.left + 8)) + "px";
+    colorPop.style.top = Math.max(8, Math.min(window.innerHeight - ph - 10, r.top)) + "px";
     // 色板是 HTML 弹层，压不住原生置顶的附件热区 —— 不撤掉的话点色块会点到后面的缩略图/卡片
     syncHotzones();
-    colorPop.querySelectorAll("i").forEach(function (el) {
+    colorPop.querySelectorAll("[data-c]").forEach(function (el) {
       el.onclick = function () {
-        if (colorTargetId) send("color|" + colorTargetId + "|" + (el.getAttribute("data-c") || ""));
+        var nc = el.getAttribute("data-c") || "";
+        if (colorTargetId) {
+          send("color|" + colorTargetId + "|" + nc);
+          // 改到筛选之外的颜色 → 卡片会立刻从视图里消失，说清楚原因，别让人以为记录丢了
+          if (fkey === "__none__" && nc) {
+            showHint("这条有了优先级（" + (labelOf(nc) || nc) + "），移出了当前筛选");
+          } else if (fkey && fkey !== "__none__" && nc && nc.toUpperCase() !== fkey.toUpperCase()) {
+            showHint("已改成「" + (labelOf(nc) || nc) + "」，移出了当前筛选");
+          }
+        }
         colorPop.classList.remove("on");
         colorTargetId = null;
         syncHotzones();
@@ -2403,7 +3014,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     syncHotzones();
     updateTopButton();
     updateBatchCnt();
-    sortables.forEach(function (x) { try { x.option("disabled", flag); } catch (e) {} });
+    sortables.forEach(function (x) { try { x.option("disabled", flag || !!fkey); } catch (e) {} });
   }
   function doBatch(op) {
     var ids = Object.keys(batchSel);
@@ -2429,7 +3040,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
 
   function openSettings(flag) {
     settingsPanel.classList.toggle("on", flag);
-    if (flag) { renderPalettes(); renderEdgeColors(); renderEdgePulses(); try { send("state"); } catch (e) { } }
+    if (flag) { renderPalettes(); renderEdgeColors(); renderEdgePulses(); renderLabelGrid(); try { send("state"); } catch (e) { } }
     syncHotzones();
   }
   var _trashFromSettings = false;   // 是不是从「设置 → 回收站」进来的
@@ -2487,7 +3098,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         var _cbox = document.querySelector(".composer-box") || inputEl;
         var _cr = _cbox ? _cbox.getBoundingClientRect() : null;
         _addPending = _cr ? { top: _cr.top, left: _cr.left, w: _cr.width } : true;
-        send("add|" + encodeURIComponent(v));
+        // 正在筛某个优先级时，新建的卡片直接继承这个颜色（否则刚加的立刻被筛没，像没加上）
+        send("add|" + encodeURIComponent(v) + (fkey && fkey !== "__none__" ? ("|" + fkey) : ""));
         inputEl.value = ""; query = "";
         inputEl.style.height = "auto";
         syncComposerClear();
@@ -2622,11 +3234,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     if (!confirm("清空回收站里的全部内容？此操作不可恢复。")) return;
     send("empttrash");
   });
-  on("swTop", function () {
-    settings.topmost = !settings.topmost;
-    document.getElementById("swTop").classList.toggle("on", settings.topmost);
-    send("topmost|" + (settings.topmost ? 1 : 0));
-  });
+  // 窗口置顶设置已移到标题栏图钉按钮（C# 侧处理），设置面板不再有开关
   on("swAuto", function () {
     settings.autoStart = !settings.autoStart;
     document.getElementById("swAuto").classList.toggle("on", settings.autoStart);
@@ -2755,6 +3363,24 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       var c3 = document.getElementById("swClose"); if (c3) c3.classList.toggle("on", !!settings.closeToTray);
       var dr = document.getElementById("dataRootPath"); if (dr && settings.dataRoot) dr.textContent = settings.dataRoot;
       var dz = document.getElementById("dataSize"); if (dz && settings.dataSize) dz.textContent = "已占用 " + settings.dataSize;
+      // 优先级名称：另一台机器改名后 C# 会推下来，这里只在不一致时才重画（否则会打断正在输入的设置框）
+      if (st && st.labels) {
+        var nl = takeLabels(st.labels);
+        if (nl.join("\u0001") !== labels.join("\u0001")) {
+          labels = nl;
+          // v2829：正在这个格子里打字时绝不能重画（重建 DOM 会把输入法候选打断，
+          // 表现就是「还没上屏，字就没了」）。等失焦之后下一次回推再刷。
+          var typing = document.activeElement && document.activeElement.classList &&
+                       document.activeElement.classList.contains("lgin");
+          if (settingsPanel && settingsPanel.classList.contains("on") && !typing) renderLabelGrid();
+          render();
+        }
+      }
+      // chip 的先后顺序同理：另一台机器拖过以后立刻跟过去
+      if (st && st.order) {
+        var no = takeOrder(st.order);
+        if (no.join(",") !== labelOrder.join(",")) { labelOrder = no; renderStrip(); }
+      }
       applyPalette(settings.palette || 9);
     },
     setPalette: function (i) { settings.palette = i; applyPalette(i); },
@@ -3485,7 +4111,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     // 蓝色「松开·加到这条」和落点预览会永久卡住。鼠标回到无按键状态就清掉。
     // 拖拽期间 dragover 是连续的；超过 200ms 没有 dragover 才认为是「已经松手了」，
     // 否则某些环境下拖拽中的 mousemove(buttons=0) 会把预览一闪一闪地清掉。
-    if (e.buttons === 0 && (_dropTargetEl || _dropPreviewEl) &&
+    if (e.buttons === 0 && (_dropTargetEl || _dropPreviewEl ||
+        (composerWrap && composerWrap.classList.contains("dropping"))) &&
         (Date.now() - _lastDragOverAt > 200)) cleanupDropUi();
   }, true);
 
@@ -3498,9 +4125,122 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   function dragHasFiles(dt) {
     try { return !!(dt && dt.types && Array.prototype.indexOf.call(dt.types, "Files") >= 0); } catch (e) { return false; }
   }
-  function dragIsInternal() {
-    try { return !!(window.__internalDragAt && (Date.now() - window.__internalDragAt) < 2500); } catch (e) { return false; }
+  /* 外部拖进来的文字 / 链接（微信链接卡片、浏览器地址栏、选中的一段话……）
+     这类拖拽没有 Files，只有 text/plain、text/html、text/uri-list 里的一个或几个。 */
+  var DROP_TEXT_TYPES = ["text/plain", "text/html", "text/uri-list"];
+  function dragHasText(dt) {
+    try {
+      if (!dt || !dt.types) return false;
+      for (var i = 0; i < DROP_TEXT_TYPES.length; i++) {
+        if (Array.prototype.indexOf.call(dt.types, DROP_TEXT_TYPES[i]) >= 0) return true;
+      }
+      return false;
+    } catch (e) { return false; }
   }
+  function dragIsSupported(dt) { return dragHasFiles(dt) || dragHasText(dt); }
+  /* 从本页自己选中的文字又拖回来：别再插一遍 */
+  function dragIsTextInternal() {
+    try {
+      if (window.__ourDragActive && (Date.now() - (window.__ourDragAt || 0)) < 8000) return true;
+      return !!(window.__internalTextDragAt && (Date.now() - window.__internalTextDragAt) < 2500);
+    } catch (e) { return false; }
+  }
+
+  /* 把拖进来的内容还原成一段可读文本：
+     - 有 URL（uri-list，或纯文本里带的链接）→ Markdown 链接 [标题](url)，
+       标题优先取 html 里 <a> 的文字（微信卡片就是这个形状）
+     - 只有 html → 转纯文本（网页富文本、卡片正文）
+     - 最后退回 text/plain */
+  function firstUrlIn(s) {
+    if (!s) return "";
+    var lines = String(s).split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i].trim();
+      if (!l || l.indexOf("#") === 0) continue;   // uri-list 的注释行
+      if (/^https?:\/\//i.test(l)) return l;
+    }
+    return "";
+  }
+  function htmlLinkOf(html) {
+    try {
+      var d = document.createElement("div");
+      d.innerHTML = html || "";
+      var a = d.querySelector("a[href]");
+      if (!a) return null;
+      var href = a.getAttribute("href") || "";
+      if (!/^https?:\/\//i.test(href)) return null;
+      var title = (a.textContent || "").replace(/\s+/g, " ").trim();
+      return { url: href, title: (title && title !== href) ? title : "" };
+    } catch (e) { return null; }
+  }
+  function htmlToPlain(html) {
+    try {
+      var d = document.createElement("div");
+      d.innerHTML = html || "";
+      return (d.innerText || d.textContent || "").replace(/\u00a0/g, " ").replace(/[ \t]+\n/g, "\n").trim();
+    } catch (e) { return ""; }
+  }
+  function extractDropText(dt) {
+    var html = "", plain = "", uri = "";
+    try { html = dt.getData("text/html") || ""; } catch (e1) { }
+    try { plain = dt.getData("text/plain") || dt.getData("Text") || ""; } catch (e2) { }
+    try { uri = dt.getData("text/uri-list") || ""; } catch (e3) { }
+    // 少数来源（微信/浏览器）只挂老式格式名，逐个再试
+    if (!uri) { try { uri = dt.getData("URL") || dt.getData("text/x-moz-url") || dt.getData("DownloadURL") || ""; } catch (e4) { } }
+    var link = htmlLinkOf(html);
+    var url = firstUrlIn(uri) || firstUrlIn(plain) || (link ? link.url : "");
+    if (url) {
+      var title = (link && link.title) || "";
+      if (!title) {
+        // 纯文本里「标题 + 链接」两行是常见形状，取第一个不是 URL 的行当标题
+        var ls = plain.split(/\r?\n/);
+        for (var i = 0; i < ls.length; i++) {
+          var t = ls[i].trim();
+          if (t && !/^https?:\/\//i.test(t)) { title = t.length > 120 ? t.slice(0, 120) + "…" : t; break; }
+        }
+      }
+      return title ? "[" + title + "](" + url + ")" : url;
+    }
+    var txt = html ? htmlToPlain(html) : "";
+    if (!txt) txt = plain.replace(/\u00a0/g, " ").trim();
+    if (txt.length > 8000) txt = txt.slice(0, 8000) + "…";
+    return txt;
+  }
+  function dragIsInternal() {
+    try {
+      // C# 发起系统拖拽期间（__sysDrag=1）：整段拖拽都算「自己的」。
+      // 只靠时间戳挡不住「拖出去转一圈再拖回来」，那条路会走页面的导入逻辑、复制出一份。
+      if (window.__sysDrag) return true;
+      if (window.__ourDragActive && (Date.now() - (window.__ourDragAt || 0)) < 8000) return true;
+      return !!(window.__internalDragAt && (Date.now() - window.__internalDragAt) < 2500);
+    } catch (e) { return false; }
+  }
+  // 有些来源（微信链接卡片）压根不给拖拽数据，退一步支持「复制 → 粘贴」：
+  // 整段粘贴就是一条链接时，自动落成 Markdown 链接，而不是一串裸文本。
+  function pasteLinkAsMarkdown(e) {
+    var t = e.target;
+    if (!t || t.tagName !== "TEXTAREA") return;
+    var dt = e.clipboardData;
+    if (!dt) return;
+    var html = "", plain = "";
+    try { html = dt.getData("text/html") || ""; } catch (e1) { }
+    try { plain = dt.getData("text/plain") || ""; } catch (e2) { }
+    var link = htmlLinkOf(html);
+    var url = (link && link.url) || firstUrlIn(plain) || "";
+    if (!url) return;
+    if (plain.length > 600) return;
+    var rest = plain.split(url).join(" ").replace(/\s+/g, " ").trim();
+    if (rest.length > 120) return;
+    var title = (link && link.title) || (rest && rest !== url ? rest : "");
+    if (!title) return;
+    var md = "[" + title + "](" + url + ")";
+    e.preventDefault();
+    var s = t.selectionStart, en = t.selectionEnd, v = t.value || "";
+    t.value = v.slice(0, s) + md + v.slice(en);
+    t.selectionStart = t.selectionEnd = s + md.length;
+    try { t.dispatchEvent(new Event("input", { bubbles: true })); } catch (e3) { }
+  }
+  document.addEventListener("paste", pasteLinkAsMarkdown, true);
   function clearDropTargetCard() {
     if (_dropTargetEl) { try { _dropTargetEl.classList.remove("drop-target"); } catch (e) { } _dropTargetEl = null; }
   }
@@ -3513,6 +4253,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   var composerDropEl = document.getElementById("composerDrop");
   var composerAreaEl = document.querySelector(".composer-area");
   var _cdropCount = 0;
+  var _cdropText = false;
 
   function hideComposerDrop(instant) {
     if (!composerWrap || !composerWrap.classList.contains("dropping")) return;
@@ -3526,17 +4267,25 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     }
     if (composerDropEl) composerDropEl.innerHTML = "";
     _cdropCount = 0;
+    _cdropText = false;
   }
 
-  function showComposerDrop(n) {
+  function showComposerDrop(n, mode) {
     if (!composerWrap || !composerDropEl) return;
+    var isText = mode === "text";
     var cnt = Math.max(1, Math.min(4, n || 1));
-    if (!composerWrap.classList.contains("dropping") || cnt !== _cdropCount) {
+    if (!composerWrap.classList.contains("dropping") || cnt !== _cdropCount || isText !== _cdropText) {
       var html = "";
-      for (var i = 0; i < cnt; i++) html += '<i class="slot"></i>';
-      if (n > cnt) html += '<span class="cdrop-more">+' + (n - cnt) + '</span>';
+      if (isText) {
+        // 文字/链接：不摆附件格子（那是"要传文件"的意思），用一块虚线提示
+        html = '<span class="chint">松开 · 添加到新待办</span>';
+      } else {
+        for (var i = 0; i < cnt; i++) html += '<i class="slot"></i>';
+        if (n > cnt) html += '<span class="cdrop-more">+' + (n - cnt) + '</span>';
+      }
       composerDropEl.innerHTML = html;
       _cdropCount = cnt;
+      _cdropText = isText;
     }
     composerWrap.classList.add("dropping");
   }
@@ -3633,11 +4382,39 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         clearDropTargetCard();
         _extNote = null;
         _extNoteId = "";
-        showComposerDrop(_dragFileCount);
+        showComposerDrop(_dragFileCount, _dragKind);
         return;
       }
     }
     hideComposerDrop(false);
+
+    /* 文字/链接：只在卡片上打高亮，不往附件行里插虚线格
+       （虚线格是"传文件"的语义，插了反而误导，还会在卡片里留下空附件区） */
+    if (_dragKind === "text") {
+      var tel = null;
+      try { tel = document.elementFromPoint(x, y); } catch (e5) { }
+      var tcard = tel && tel.closest ? tel.closest(".note") : null;
+      removeExtSlot(true);
+      _extNote = null;
+      _extNoteId = "";
+      if (tcard) {
+        hideDropPreview();
+        _extNote = tcard;
+        _extNoteId = tcard.getAttribute("data-id") || "";
+        if (_dropTargetEl !== tcard) {
+          clearDropTargetCard();
+          _dropTargetEl = tcard;
+          tcard.classList.add("drop-target");
+        }
+        return;
+      }
+      clearDropTargetCard();
+      if (!wrapEl) return;
+      var twr = wrapEl.getBoundingClientRect();
+      if (x >= twr.left && x <= twr.right && y >= twr.top - 46 && y <= twr.bottom) showDropPreview();
+      else hideDropPreview();
+      return;
+    }
 
     var hit = extInsertPointAt(x, y);
     if (hit) {
@@ -3680,6 +4457,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   // 拖拽时 dragover 是 60~120Hz，重活（elementFromPoint + FLIP）必须每帧最多一次
   var _dragPt = null, _dragRaf = 0;
   var _dropApplied = false, _dropAX = -9999, _dropAY = -9999;
+  var _dropDoneAt = 0, _lastTypesLogged = "";
   /* 边缘自动滚了一帧之后：内容动了、指针没动，落点必须重算 */
   function dropRefresh() {
     if (!_dragPt) return;
@@ -3687,13 +4465,28 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     _dropAX = _dragPt.x; _dropAY = _dragPt.y; _dropApplied = true;
   }
   document.addEventListener("dragover", function (e) {
-    if (dragIsInternal() || !dragHasFiles(e.dataTransfer)) return;
+    // 刚松手后的几百毫秒里原生层还会补发 dragover，别让预览又长回来
+    if (_dropDoneAt && Date.now() - _dropDoneAt < 1500) return;
+    if (dragIsInternal() || dragIsTextInternal()) return;
+    if (!dragIsSupported(e.dataTransfer)) {
+      // 诊断：把陌生拖拽的 types 记进 bridge.log，用来查微信卡片这类拖不进来的来源
+      try {
+        var ty = (e.dataTransfer && e.dataTransfer.types)
+          ? Array.prototype.slice.call(e.dataTransfer.types).join(",") : "none";
+        if (ty !== _lastTypesLogged) { _lastTypesLogged = ty; send("droptypes|" + ty); }
+      } catch (eT) { }
+      return;
+    }
     e.preventDefault();
+    // 明确要副本：不写这一句，某些来源（Word/微信文字）会按 move 处理，原文就被拿走了
+    try { e.dataTransfer.dropEffect = "copy"; } catch (eD) { }
     _lastDragOverAt = Date.now();
+    _dragKind = dragHasFiles(e.dataTransfer) ? "file" : "text";
     try {
       var its = e.dataTransfer.items;
-      if (its && its.length) _dragFileCount = its.length;
-      else if (e.dataTransfer.files && e.dataTransfer.files.length) _dragFileCount = e.dataTransfer.files.length;
+      if (_dragKind === "file" && its && its.length) _dragFileCount = its.length;
+      else if (_dragKind === "file" && e.dataTransfer.files && e.dataTransfer.files.length) _dragFileCount = e.dataTransfer.files.length;
+      else _dragFileCount = 1;
     } catch (e12) { }
     extBegin();
     _dragPt = { x: e.clientX, y: e.clientY };
@@ -3713,21 +4506,29 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   }, true);
 
   document.addEventListener("dragleave", function (e) {
-    if (!dragHasFiles(e.dataTransfer)) return;
+    if (!dragIsSupported(e.dataTransfer)) return;
     if (!e.relatedTarget) cleanupDropUi();
   }, true);
 
-  document.addEventListener("dragend", function () { cleanupDropUi(); }, true);
+  document.addEventListener("dragend", function () { window.__ourDragActive = false; cleanupDropUi(); }, true);
   window.addEventListener("blur", cleanupDropUi);
 
   // 双保险：即使 C# 热区因为系统层级问题没盖住，也不允许缩略图变成浏览器原生图片拖拽。
   // 否则 Chrome 会把 img 的缓存文件当成“新拖入文件”，名字会变成 ico_xxx.png。
   document.addEventListener("dragstart", function (e) {
+    window.__ourDragActive = true;
+    window.__ourDragAt = Date.now();
     var t = e.target;
     if (t && t.closest && (t.closest(".att") || t.closest(".atts"))) {
       e.preventDefault();
       e.stopPropagation();
+      return;
     }
+    // 本页里选中的文字被拖出去：打上时间戳，2.5 秒内拖回本页不当作"外部拖入"
+    try {
+      var sel = document.getSelection();
+      if (sel && String(sel).trim().length) window.__internalTextDragAt = Date.now();
+    } catch (e13) { }
   }, true);
 
   /* ---------- 拖入的文件：分片上传（没有单文件上限） ----------
@@ -3849,8 +4650,15 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
 
   document.addEventListener("drop", function (e) {
     e.preventDefault();
+    // 告诉来源这是「复制」，源端就不会把原文删掉
+    try { e.dataTransfer.dropEffect = "copy"; } catch (eC) { }
+    window.__ourDragActive = false;
+    _dropDoneAt = Date.now();
     var dt = e.dataTransfer;
-    if (!dt || !dt.files || !dt.files.length) return;
+    if (!dt) return;
+    // C# 的系统拖拽还没结束（__sysDrag=1）：落回页面的就是自己的附件，一律不收。
+    // 旧做法只靠 __internalDragAt 的 2.5 秒窗口，拖出去停一会儿再拖回来就挡不住了。
+    try { if (window.__sysDrag) return; } catch (eS) { }
     // 自己拖出去的附件又被拖回来：忽略，否则会复制出一份新笔记
     try {
       if (dt.types && Array.prototype.indexOf.call(dt.types, "TempNotesInternal") >= 0) return;
@@ -3859,6 +4667,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     try {
       if (window.__internalDragAt && (Date.now() - window.__internalDragAt) < 2500) return;
     } catch (e10) { }
+    if (dragIsTextInternal()) return;
 
     // 落点决定去哪：卡片上 → 加到那条笔记；输入框/空白 → 新建一条。
     // 以预览空槽所在的卡片为准（松手瞬间指针可能正好压在占位块上）。
@@ -3872,7 +4681,37 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       }
     } catch (err) { }
 
-    var files = Array.prototype.slice.call(dt.files);
+    var files = [];
+    try { files = Array.prototype.slice.call(dt.files || []); } catch (e14) { }
+
+    /* ---------- 拖进来的是文字 / 链接（没有文件） ---------- */
+    if (!files.length) {
+      var text = extractDropText(dt);
+      cleanupDropUi();
+      if (!text) {
+        try { send("dropempty|" + (dt.types ? Array.prototype.slice.call(dt.types).join(",") : "none")); } catch (e15) { }
+        return;
+      }
+      if (target) {
+        // 落在某条待办上：追加到那条的正文后面（换行分隔）
+        var tn = find(target);
+        if (tn) {
+          var nt = (tn.text ? tn.text.replace(/\s+$/, "") + "\n" : "") + text;
+          tn.text = nt;
+          _dropFlashId = target;
+          send("update|" + target + "|" + encodeURIComponent(nt));
+          render();                       // 先本地落一遍，C# 回推再校正
+        }
+      } else {
+        // 落在输入框 / 空白：新建一条待办，走和按 Enter 同一套动画
+        var cbox = document.querySelector(".composer-box");
+        var cr = cbox ? cbox.getBoundingClientRect() : null;
+        _addPending = cr ? { top: cr.top, left: cr.left, w: cr.width } : true;
+        _dropNewPending = true;           // 新卡回来时滚到顶部 + 闪一下
+        send("add|" + encodeURIComponent(text));
+      }
+      return;
+    }
     var box = _extSlot && _extSlot.parentNode ? _extSlot.parentNode : null;
     if (!box && _extNote) box = attBoxOf(_extNote, true);
     var wasEmpty = box ? !box.querySelector(".att") : false;
