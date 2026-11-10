@@ -83,6 +83,9 @@ namespace TempNotes2
         /// <summary>主色（accent）跟随配色，标题栏图钉用它做按压/置顶底色。</summary>
         public Action<string> OnSetAccent;
 
+        /// <summary>网页端是否正在编辑/拖拽（v2812）：true 时 C# 推迟磁盘刷新，别打断输入。</summary>
+        public Action<bool> OnBusy;
+
         public Bridge(Store store, Action<string> eval, Action<string> log)
         {
             _store = store;
@@ -135,6 +138,12 @@ namespace TempNotes2
 
                 case "dragend":
                     if (OnDragEnd != null) OnDragEnd();
+                    if (OnBusy != null) OnBusy(false);
+                    break;
+
+                case "busy":
+                    // busy|1 用户开始编辑/拖拽  busy|0 结束（v2812）
+                    if (p.Length > 1 && OnBusy != null) OnBusy(p[1] == "1");
                     break;
 
                 case "extdrag":

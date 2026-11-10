@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
@@ -843,6 +843,10 @@ namespace TempNotes2
         private readonly List<FileSystemWatcher> _dbWatchers = new List<FileSystemWatcher>();
         private System.Windows.Threading.DispatcherTimer _dbTimer;
         private System.Windows.Threading.DispatcherTimer _dbPollTimer;
+        private DateTime _dbLastFire = DateTime.MinValue;   // 上次真正重绘的时刻（用来「首个事件立刻刷、后续合并」）
+        private bool _dbBusy;                                // 网页端正在编辑/拖拽
+        private bool _dbDeferred;                            // 因为 busy 被推迟的刷新
+        private int _dbPollTick;                             // 轮询计数（窗口不可见时降频）
 
         // 只认 notes\ 与 deleted\ 下的 json，根目录其它文件（settings.json、backup\ 里的）不算数据变化。
         private static bool IsDbPath(string path)
@@ -856,14 +860,28 @@ namespace TempNotes2
         {
             try
             {
-                _dbTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
-                _dbTimer.Tick += (s, e2) => { _dbTimer.Stop(); ReloadFromDisk(log); };
+                // 第一个事件立刻刷（体感 0 延迟），随后的连续事件在 200ms 里合并成一次。
+                _dbTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+                _dbTimer.Tick += (s, e2) => { _dbTimer.Stop(); _dbLastFire = DateTime.UtcNow; ReloadFromDisk(log); };
 
                 // 兜底轮询：OneDrive 同步时有时会整个替换 notes\ 目录，FileSystemWatcher 挂在旧目录上
                 // 就会悄悄失聪（2026-11-10 用户报「笔记本记的待办台式机一直不出现」就是这种）。
-                // 每 4 秒扫一遍目录，只比对 mtime，没变的文件一个都不读。
-                _dbPollTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
-                _dbPollTimer.Tick += (s, e2) => ReloadFromDisk(log);
+                // v2812 从 4 秒收紧到 1 秒；窗口收进托盘/最小化时降到 5 秒，免得白扫。
+                // 只比对 mtime，没变的文件一个都不读。
+                _dbPollTick = 0;
+                _dbPollTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1000) };
+                _dbPollTimer.Tick += (s, e2) =>
+                {
+                    try
+                    {
+                        _dbPollTick++;
+                        bool visible = false;
+                        try { visible = IsVisible && WindowState != WindowState.Minimized; } catch { }
+                        if (!visible && (_dbPollTick % 5) != 0) return;
+                        ReloadFromDisk(log);
+                    }
+                    catch { }
+                };
                 _dbPollTimer.Start();
 
                 string root = _store.Root;
@@ -913,8 +931,19 @@ namespace TempNotes2
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     if (_dbTimer == null) return;
-                    _dbTimer.Stop();
-                    _dbTimer.Start();
+                    // 距上次重绘超过 900ms 就立刻刷（单次写入的常见情形，体感无延迟）；
+                    // 否则说明是一串连续事件（OneDrive 批量落盘），丢进 200ms 窗口合并。
+                    if ((DateTime.UtcNow - _dbLastFire).TotalMilliseconds > 900)
+                    {
+                        _dbTimer.Stop();
+                        _dbLastFire = DateTime.UtcNow;
+                        ReloadFromDisk(LogMsg);
+                    }
+                    else
+                    {
+                        _dbTimer.Stop();
+                        _dbTimer.Start();
+                    }
                 }));
             }
             catch { }
@@ -925,6 +954,9 @@ namespace TempNotes2
             try
             {
                 if (_store == null || _bridge == null) return;
+                // 用户正在打字 / 拖卡片 / 输入法组词时先别重绘，等松手或失焦后再补一次，
+                // 否则光标会被挤走、拖动会被打断。
+                if (_dbBusy) { _dbDeferred = true; return; }
                 if (_store.PullFromDisk())
                 {
                     _bridge.PushAll();
@@ -934,6 +966,22 @@ namespace TempNotes2
                 }
             }
             catch (Exception ex) { log("合并磁盘失败 " + ex.Message); }
+        }
+
+        // 网页端 busy 状态变化：放开时把攒下的那次刷新补上。
+        private void SetUiBusy(bool busy)
+        {
+            try
+            {
+                _dbBusy = busy;
+                if (!busy && _dbDeferred)
+                {
+                    _dbDeferred = false;
+                    _dbLastFire = DateTime.UtcNow;
+                    ReloadFromDisk(LogMsg);
+                }
+            }
+            catch { }
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -953,7 +1001,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2811 数据一注一文件 / 删除墓碑同步 / 数据目录监听（含 4 秒兜底轮询、监听自愈）");
+                log("版本 2812 数据一注一文件 / 删除墓碑同步 / 目录监听（首个事件即刷 + 1 秒兜底轮询 + 编辑拖动不打断）");
             _store = new Store();
                 _store.Load();
                 log("Store 载入，笔记 " + _store.Db.Notes.Count + " 条，根目录 " + _store.Root);
@@ -988,6 +1036,8 @@ namespace TempNotes2
 
                 _bridge = new Bridge(_store, Eval, log);
                 _bridge.OnDataRootChanged = ApplyDataRoot;
+                // v2812：网页端在编辑/拖拽时先不重绘，避免同步刷新打断输入。
+                _bridge.OnBusy = SetUiBusy;
 
                 // v2810：数据是「一条笔记一个文件」，改成实时监听目录，不再只等窗口激活。
                 StartDbWatcher(log);

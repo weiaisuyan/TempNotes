@@ -1,4 +1,4 @@
-/* ============================================================
+﻿/* ============================================================
    随记 v2 · 前端  (build 2026-11-08-1410)
    JS → C#：chrome.webview.postMessage("cmd|a|b…")
    C# → JS：window.api.*
@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-10-2799";
+var APPJS_VER = "2026-11-10-2812";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -58,6 +58,32 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     if (tries > 60) return;
     setTimeout(function () { sendRetry(m, tries + 1); }, 50);
   }
+
+  /* v2812：把「用户正在编辑 / 正在拖拽」告诉 C#。
+     C# 那边每秒会扫一次磁盘，但绝不能在用户打字、拖卡片、输入法组词时重绘，
+     否则光标会跳、拖动会断。这里只在状态真的变化时才发一条消息，开销可忽略。 */
+  var _busySent = false;
+  function _isEditingNow() {
+    var a = document.activeElement;
+    if (!a) return false;
+    if (a.tagName === "TEXTAREA" || a.tagName === "INPUT") return true;
+    try { return !!(a.closest && a.closest("[contenteditable='true']")); } catch (e) { return false; }
+  }
+  function _syncBusy() {
+    var busy = false;
+    try { busy = _isEditingNow() || !!_sortDragging || !!_attDrag; } catch (e) { busy = _isEditingNow(); }
+    if (busy === _busySent) return;
+    _busySent = busy;
+    try { send("busy|" + (busy ? "1" : "0")); } catch (e2) { }
+  }
+  function _syncBusySoon() { setTimeout(_syncBusy, 40); }
+  document.addEventListener("focusin", _syncBusySoon, true);
+  document.addEventListener("focusout", _syncBusySoon, true);
+  document.addEventListener("compositionstart", _syncBusySoon, true);
+  document.addEventListener("compositionend", _syncBusySoon, true);
+  document.addEventListener("mouseup", _syncBusySoon, true);
+  document.addEventListener("keyup", function () { setTimeout(_syncBusy, 250); }, true);
+  window.addEventListener("blur", function () { setTimeout(_syncBusy, 120); });
 
   if (window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener("message", function (e) {
