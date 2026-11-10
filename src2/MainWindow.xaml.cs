@@ -61,9 +61,25 @@ namespace TempNotes2
                 string ico = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
                 if (File.Exists(ico))
                 {
-                    var frame = System.Windows.Media.Imaging.BitmapFrame.Create(new Uri(ico));
+                    // 必须自己挑最大帧：BitmapFrame.Create 只拿 ICO 的第一帧，
+                    // 而 ico 的第一帧是 16×16，贴到 22px 的标题栏上就是「放大糊图」，
+                    // 看着像旧版图标（任务栏用的是 exe 里的大图，所以两边不一样）。
+                    var dec = System.Windows.Media.Imaging.BitmapDecoder.Create(
+                        new Uri(ico),
+                        System.Windows.Media.Imaging.BitmapCreateOptions.None,
+                        System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+                    System.Windows.Media.Imaging.BitmapFrame frame = dec.Frames[0];
+                    foreach (var f in dec.Frames)
+                        if (f.PixelWidth > frame.PixelWidth) frame = f;
+
                     Icon = frame;
-                    if (AppIconImg != null) AppIconImg.Source = frame;
+                    if (AppIconImg != null)
+                    {
+                        // 只对标题栏那张图启用高质量缩放（22px 目标），避免边缘发灰
+                        System.Windows.Media.RenderOptions.SetBitmapScalingMode(
+                            AppIconImg, System.Windows.Media.BitmapScalingMode.HighQuality);
+                        AppIconImg.Source = frame;
+                    }
                 }
             }
             catch { }
