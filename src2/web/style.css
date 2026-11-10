@@ -173,6 +173,17 @@ body.batch .composer-wrap{
   color:color-mix(in srgb,var(--accent) 70%,transparent);
 }
 .cdrop .cdrop-more{font-size:11px;color:var(--faint);margin-left:2px}
+/* 拖文字/链接到输入框：不摆附件格子，用一条虚线提示"松手新建" */
+.cdrop .chint{
+  display:flex;align-items:center;
+  height:58px;max-width:100%;padding:0 16px;border-radius:10px;
+  border:1.5px dashed color-mix(in srgb,var(--accent) 62%,transparent);
+  background:color-mix(in srgb,var(--accent) 9%,transparent);
+  color:color-mix(in srgb,var(--accent) 88%,var(--text));
+  font-size:12.5px;letter-spacing:.02em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  animation:cdropIn .26s cubic-bezier(.22,1,.36,1) both;
+}
 @keyframes cdropIn{from{opacity:0;transform:scale(.86) translateY(-4px)}to{opacity:1;transform:none}}
 
 .composer-wrap.dropping .composer-box{

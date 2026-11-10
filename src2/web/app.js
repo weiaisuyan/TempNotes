@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-09-2794";
+var APPJS_VER = "2026-11-10-2798";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -1401,6 +1401,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   var _dropTargetEl = null;
   var _lastDragOverAt = 0;
   var _dragFileCount = 1;
+var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还是文字/链接
   var _topScrollRaf = 0;
   var _wheelTarget = 0;      // 热区转发的滚轮：累计目标位置
   var _wheelRaf = 0;
@@ -3495,7 +3496,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     // 蓝色「松开·加到这条」和落点预览会永久卡住。鼠标回到无按键状态就清掉。
     // 拖拽期间 dragover 是连续的；超过 200ms 没有 dragover 才认为是「已经松手了」，
     // 否则某些环境下拖拽中的 mousemove(buttons=0) 会把预览一闪一闪地清掉。
-    if (e.buttons === 0 && (_dropTargetEl || _dropPreviewEl) &&
+    if (e.buttons === 0 && (_dropTargetEl || _dropPreviewEl ||
+        (composerWrap && composerWrap.classList.contains("dropping"))) &&
         (Date.now() - _lastDragOverAt > 200)) cleanupDropUi();
   }, true);
 
@@ -3508,9 +3510,119 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   function dragHasFiles(dt) {
     try { return !!(dt && dt.types && Array.prototype.indexOf.call(dt.types, "Files") >= 0); } catch (e) { return false; }
   }
-  function dragIsInternal() {
-    try { return !!(window.__internalDragAt && (Date.now() - window.__internalDragAt) < 2500); } catch (e) { return false; }
+  /* 外部拖进来的文字 / 链接（微信链接卡片、浏览器地址栏、选中的一段话……）
+     这类拖拽没有 Files，只有 text/plain、text/html、text/uri-list 里的一个或几个。 */
+  var DROP_TEXT_TYPES = ["text/plain", "text/html", "text/uri-list"];
+  function dragHasText(dt) {
+    try {
+      if (!dt || !dt.types) return false;
+      for (var i = 0; i < DROP_TEXT_TYPES.length; i++) {
+        if (Array.prototype.indexOf.call(dt.types, DROP_TEXT_TYPES[i]) >= 0) return true;
+      }
+      return false;
+    } catch (e) { return false; }
   }
+  function dragIsSupported(dt) { return dragHasFiles(dt) || dragHasText(dt); }
+  /* 从本页自己选中的文字又拖回来：别再插一遍 */
+  function dragIsTextInternal() {
+    try {
+      if (window.__ourDragActive && (Date.now() - (window.__ourDragAt || 0)) < 8000) return true;
+      return !!(window.__internalTextDragAt && (Date.now() - window.__internalTextDragAt) < 2500);
+    } catch (e) { return false; }
+  }
+
+  /* 把拖进来的内容还原成一段可读文本：
+     - 有 URL（uri-list，或纯文本里带的链接）→ Markdown 链接 [标题](url)，
+       标题优先取 html 里 <a> 的文字（微信卡片就是这个形状）
+     - 只有 html → 转纯文本（网页富文本、卡片正文）
+     - 最后退回 text/plain */
+  function firstUrlIn(s) {
+    if (!s) return "";
+    var lines = String(s).split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i].trim();
+      if (!l || l.indexOf("#") === 0) continue;   // uri-list 的注释行
+      if (/^https?:\/\//i.test(l)) return l;
+    }
+    return "";
+  }
+  function htmlLinkOf(html) {
+    try {
+      var d = document.createElement("div");
+      d.innerHTML = html || "";
+      var a = d.querySelector("a[href]");
+      if (!a) return null;
+      var href = a.getAttribute("href") || "";
+      if (!/^https?:\/\//i.test(href)) return null;
+      var title = (a.textContent || "").replace(/\s+/g, " ").trim();
+      return { url: href, title: (title && title !== href) ? title : "" };
+    } catch (e) { return null; }
+  }
+  function htmlToPlain(html) {
+    try {
+      var d = document.createElement("div");
+      d.innerHTML = html || "";
+      return (d.innerText || d.textContent || "").replace(/\u00a0/g, " ").replace(/[ \t]+\n/g, "\n").trim();
+    } catch (e) { return ""; }
+  }
+  function extractDropText(dt) {
+    var html = "", plain = "", uri = "";
+    try { html = dt.getData("text/html") || ""; } catch (e1) { }
+    try { plain = dt.getData("text/plain") || dt.getData("Text") || ""; } catch (e2) { }
+    try { uri = dt.getData("text/uri-list") || ""; } catch (e3) { }
+    // 少数来源（微信/浏览器）只挂老式格式名，逐个再试
+    if (!uri) { try { uri = dt.getData("URL") || dt.getData("text/x-moz-url") || dt.getData("DownloadURL") || ""; } catch (e4) { } }
+    var link = htmlLinkOf(html);
+    var url = firstUrlIn(uri) || firstUrlIn(plain) || (link ? link.url : "");
+    if (url) {
+      var title = (link && link.title) || "";
+      if (!title) {
+        // 纯文本里「标题 + 链接」两行是常见形状，取第一个不是 URL 的行当标题
+        var ls = plain.split(/\r?\n/);
+        for (var i = 0; i < ls.length; i++) {
+          var t = ls[i].trim();
+          if (t && !/^https?:\/\//i.test(t)) { title = t.length > 120 ? t.slice(0, 120) + "…" : t; break; }
+        }
+      }
+      return title ? "[" + title + "](" + url + ")" : url;
+    }
+    var txt = html ? htmlToPlain(html) : "";
+    if (!txt) txt = plain.replace(/\u00a0/g, " ").trim();
+    if (txt.length > 8000) txt = txt.slice(0, 8000) + "…";
+    return txt;
+  }
+  function dragIsInternal() {
+    try {
+      if (window.__ourDragActive && (Date.now() - (window.__ourDragAt || 0)) < 8000) return true;
+      return !!(window.__internalDragAt && (Date.now() - window.__internalDragAt) < 2500);
+    } catch (e) { return false; }
+  }
+  // 有些来源（微信链接卡片）压根不给拖拽数据，退一步支持「复制 → 粘贴」：
+  // 整段粘贴就是一条链接时，自动落成 Markdown 链接，而不是一串裸文本。
+  function pasteLinkAsMarkdown(e) {
+    var t = e.target;
+    if (!t || t.tagName !== "TEXTAREA") return;
+    var dt = e.clipboardData;
+    if (!dt) return;
+    var html = "", plain = "";
+    try { html = dt.getData("text/html") || ""; } catch (e1) { }
+    try { plain = dt.getData("text/plain") || ""; } catch (e2) { }
+    var link = htmlLinkOf(html);
+    var url = (link && link.url) || firstUrlIn(plain) || "";
+    if (!url) return;
+    if (plain.length > 600) return;
+    var rest = plain.split(url).join(" ").replace(/\s+/g, " ").trim();
+    if (rest.length > 120) return;
+    var title = (link && link.title) || (rest && rest !== url ? rest : "");
+    if (!title) return;
+    var md = "[" + title + "](" + url + ")";
+    e.preventDefault();
+    var s = t.selectionStart, en = t.selectionEnd, v = t.value || "";
+    t.value = v.slice(0, s) + md + v.slice(en);
+    t.selectionStart = t.selectionEnd = s + md.length;
+    try { t.dispatchEvent(new Event("input", { bubbles: true })); } catch (e3) { }
+  }
+  document.addEventListener("paste", pasteLinkAsMarkdown, true);
   function clearDropTargetCard() {
     if (_dropTargetEl) { try { _dropTargetEl.classList.remove("drop-target"); } catch (e) { } _dropTargetEl = null; }
   }
@@ -3523,6 +3635,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   var composerDropEl = document.getElementById("composerDrop");
   var composerAreaEl = document.querySelector(".composer-area");
   var _cdropCount = 0;
+  var _cdropText = false;
 
   function hideComposerDrop(instant) {
     if (!composerWrap || !composerWrap.classList.contains("dropping")) return;
@@ -3536,17 +3649,25 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     }
     if (composerDropEl) composerDropEl.innerHTML = "";
     _cdropCount = 0;
+    _cdropText = false;
   }
 
-  function showComposerDrop(n) {
+  function showComposerDrop(n, mode) {
     if (!composerWrap || !composerDropEl) return;
+    var isText = mode === "text";
     var cnt = Math.max(1, Math.min(4, n || 1));
-    if (!composerWrap.classList.contains("dropping") || cnt !== _cdropCount) {
+    if (!composerWrap.classList.contains("dropping") || cnt !== _cdropCount || isText !== _cdropText) {
       var html = "";
-      for (var i = 0; i < cnt; i++) html += '<i class="slot"></i>';
-      if (n > cnt) html += '<span class="cdrop-more">+' + (n - cnt) + '</span>';
+      if (isText) {
+        // 文字/链接：不摆附件格子（那是"要传文件"的意思），用一块虚线提示
+        html = '<span class="chint">松开 · 添加到新待办</span>';
+      } else {
+        for (var i = 0; i < cnt; i++) html += '<i class="slot"></i>';
+        if (n > cnt) html += '<span class="cdrop-more">+' + (n - cnt) + '</span>';
+      }
       composerDropEl.innerHTML = html;
       _cdropCount = cnt;
+      _cdropText = isText;
     }
     composerWrap.classList.add("dropping");
   }
@@ -3643,11 +3764,39 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         clearDropTargetCard();
         _extNote = null;
         _extNoteId = "";
-        showComposerDrop(_dragFileCount);
+        showComposerDrop(_dragFileCount, _dragKind);
         return;
       }
     }
     hideComposerDrop(false);
+
+    /* 文字/链接：只在卡片上打高亮，不往附件行里插虚线格
+       （虚线格是"传文件"的语义，插了反而误导，还会在卡片里留下空附件区） */
+    if (_dragKind === "text") {
+      var tel = null;
+      try { tel = document.elementFromPoint(x, y); } catch (e5) { }
+      var tcard = tel && tel.closest ? tel.closest(".note") : null;
+      removeExtSlot(true);
+      _extNote = null;
+      _extNoteId = "";
+      if (tcard) {
+        hideDropPreview();
+        _extNote = tcard;
+        _extNoteId = tcard.getAttribute("data-id") || "";
+        if (_dropTargetEl !== tcard) {
+          clearDropTargetCard();
+          _dropTargetEl = tcard;
+          tcard.classList.add("drop-target");
+        }
+        return;
+      }
+      clearDropTargetCard();
+      if (!wrapEl) return;
+      var twr = wrapEl.getBoundingClientRect();
+      if (x >= twr.left && x <= twr.right && y >= twr.top - 46 && y <= twr.bottom) showDropPreview();
+      else hideDropPreview();
+      return;
+    }
 
     var hit = extInsertPointAt(x, y);
     if (hit) {
@@ -3690,6 +3839,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   // 拖拽时 dragover 是 60~120Hz，重活（elementFromPoint + FLIP）必须每帧最多一次
   var _dragPt = null, _dragRaf = 0;
   var _dropApplied = false, _dropAX = -9999, _dropAY = -9999;
+  var _dropDoneAt = 0, _lastTypesLogged = "";
   /* 边缘自动滚了一帧之后：内容动了、指针没动，落点必须重算 */
   function dropRefresh() {
     if (!_dragPt) return;
@@ -3697,13 +3847,28 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     _dropAX = _dragPt.x; _dropAY = _dragPt.y; _dropApplied = true;
   }
   document.addEventListener("dragover", function (e) {
-    if (dragIsInternal() || !dragHasFiles(e.dataTransfer)) return;
+    // 刚松手后的几百毫秒里原生层还会补发 dragover，别让预览又长回来
+    if (_dropDoneAt && Date.now() - _dropDoneAt < 1500) return;
+    if (dragIsInternal() || dragIsTextInternal()) return;
+    if (!dragIsSupported(e.dataTransfer)) {
+      // 诊断：把陌生拖拽的 types 记进 bridge.log，用来查微信卡片这类拖不进来的来源
+      try {
+        var ty = (e.dataTransfer && e.dataTransfer.types)
+          ? Array.prototype.slice.call(e.dataTransfer.types).join(",") : "none";
+        if (ty !== _lastTypesLogged) { _lastTypesLogged = ty; send("droptypes|" + ty); }
+      } catch (eT) { }
+      return;
+    }
     e.preventDefault();
+    // 明确要副本：不写这一句，某些来源（Word/微信文字）会按 move 处理，原文就被拿走了
+    try { e.dataTransfer.dropEffect = "copy"; } catch (eD) { }
     _lastDragOverAt = Date.now();
+    _dragKind = dragHasFiles(e.dataTransfer) ? "file" : "text";
     try {
       var its = e.dataTransfer.items;
-      if (its && its.length) _dragFileCount = its.length;
-      else if (e.dataTransfer.files && e.dataTransfer.files.length) _dragFileCount = e.dataTransfer.files.length;
+      if (_dragKind === "file" && its && its.length) _dragFileCount = its.length;
+      else if (_dragKind === "file" && e.dataTransfer.files && e.dataTransfer.files.length) _dragFileCount = e.dataTransfer.files.length;
+      else _dragFileCount = 1;
     } catch (e12) { }
     extBegin();
     _dragPt = { x: e.clientX, y: e.clientY };
@@ -3723,21 +3888,29 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   }, true);
 
   document.addEventListener("dragleave", function (e) {
-    if (!dragHasFiles(e.dataTransfer)) return;
+    if (!dragIsSupported(e.dataTransfer)) return;
     if (!e.relatedTarget) cleanupDropUi();
   }, true);
 
-  document.addEventListener("dragend", function () { cleanupDropUi(); }, true);
+  document.addEventListener("dragend", function () { window.__ourDragActive = false; cleanupDropUi(); }, true);
   window.addEventListener("blur", cleanupDropUi);
 
   // 双保险：即使 C# 热区因为系统层级问题没盖住，也不允许缩略图变成浏览器原生图片拖拽。
   // 否则 Chrome 会把 img 的缓存文件当成“新拖入文件”，名字会变成 ico_xxx.png。
   document.addEventListener("dragstart", function (e) {
+    window.__ourDragActive = true;
+    window.__ourDragAt = Date.now();
     var t = e.target;
     if (t && t.closest && (t.closest(".att") || t.closest(".atts"))) {
       e.preventDefault();
       e.stopPropagation();
+      return;
     }
+    // 本页里选中的文字被拖出去：打上时间戳，2.5 秒内拖回本页不当作"外部拖入"
+    try {
+      var sel = document.getSelection();
+      if (sel && String(sel).trim().length) window.__internalTextDragAt = Date.now();
+    } catch (e13) { }
   }, true);
 
   /* ---------- 拖入的文件：分片上传（没有单文件上限） ----------
@@ -3859,8 +4032,12 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
 
   document.addEventListener("drop", function (e) {
     e.preventDefault();
+    // 告诉来源这是「复制」，源端就不会把原文删掉
+    try { e.dataTransfer.dropEffect = "copy"; } catch (eC) { }
+    window.__ourDragActive = false;
+    _dropDoneAt = Date.now();
     var dt = e.dataTransfer;
-    if (!dt || !dt.files || !dt.files.length) return;
+    if (!dt) return;
     // 自己拖出去的附件又被拖回来：忽略，否则会复制出一份新笔记
     try {
       if (dt.types && Array.prototype.indexOf.call(dt.types, "TempNotesInternal") >= 0) return;
@@ -3869,6 +4046,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     try {
       if (window.__internalDragAt && (Date.now() - window.__internalDragAt) < 2500) return;
     } catch (e10) { }
+    if (dragIsTextInternal()) return;
 
     // 落点决定去哪：卡片上 → 加到那条笔记；输入框/空白 → 新建一条。
     // 以预览空槽所在的卡片为准（松手瞬间指针可能正好压在占位块上）。
@@ -3882,7 +4060,37 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       }
     } catch (err) { }
 
-    var files = Array.prototype.slice.call(dt.files);
+    var files = [];
+    try { files = Array.prototype.slice.call(dt.files || []); } catch (e14) { }
+
+    /* ---------- 拖进来的是文字 / 链接（没有文件） ---------- */
+    if (!files.length) {
+      var text = extractDropText(dt);
+      cleanupDropUi();
+      if (!text) {
+        try { send("dropempty|" + (dt.types ? Array.prototype.slice.call(dt.types).join(",") : "none")); } catch (e15) { }
+        return;
+      }
+      if (target) {
+        // 落在某条待办上：追加到那条的正文后面（换行分隔）
+        var tn = find(target);
+        if (tn) {
+          var nt = (tn.text ? tn.text.replace(/\s+$/, "") + "\n" : "") + text;
+          tn.text = nt;
+          _dropFlashId = target;
+          send("update|" + target + "|" + encodeURIComponent(nt));
+          render();                       // 先本地落一遍，C# 回推再校正
+        }
+      } else {
+        // 落在输入框 / 空白：新建一条待办，走和按 Enter 同一套动画
+        var cbox = document.querySelector(".composer-box");
+        var cr = cbox ? cbox.getBoundingClientRect() : null;
+        _addPending = cr ? { top: cr.top, left: cr.left, w: cr.width } : true;
+        _dropNewPending = true;           // 新卡回来时滚到顶部 + 闪一下
+        send("add|" + encodeURIComponent(text));
+      }
+      return;
+    }
     var box = _extSlot && _extSlot.parentNode ? _extSlot.parentNode : null;
     if (!box && _extNote) box = attBoxOf(_extNote, true);
     var wasEmpty = box ? !box.querySelector(".att") : false;

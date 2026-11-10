@@ -8,6 +8,8 @@ wv2demo/
 data_backup_*/
 data_bak_*/
 root.txt
+src2/_bak_*/
+*.bak-*
 
 # ===== 编译产物 =====
 bin/

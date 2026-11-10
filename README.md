@@ -6,9 +6,11 @@ Windows 桌面临时笔记工具。WPF + WebView2 外壳，界面全部用 HTML/
 
 ## 功能
 
-- **待办 + 已完成双区**，拖动排序、跨区拖动
+- **待办 + 已完成双区**，拖动排序、跨区拖动（跨区松手按方向落到本区与目标区相邻的一侧）
 - **附件**：图片 / 视频 / 文档，缩略图网格、彩色标记、删除角标
 - **拖文件进来**：资源管理器直接拖，落到卡片或输入框
+- **拖文字 / 链接进来**：从网页、记事本、Word 选中文字或链接拖进来，落卡片上追加、落空白处新建
+- **粘贴链接自动转 Markdown**：整段粘贴只是一条链接时，自动落成 `[标题](链接)`
 - **回收站**：软删除，可还原，清空后物理删除
 - **搜索过滤**：顶部输入框，拖动排序在筛选态下也正确
 - **批量编辑**：多选、批量改色 / 删除 / 移动
@@ -31,10 +33,13 @@ Windows 桌面临时笔记工具。WPF + WebView2 外壳，界面全部用 HTML/
 
 ```bash
 cd src2
-MSBuild TempNotes2.csproj -p:Configuration=Release -p:Platform=x64
+MSBuild TempNotes2.csproj -p:Configuration=Release -p:Platform=x64 "/p:FrameworkPathOverride=$(Resolve-Path .\refs)"
 ```
 
-产物在 `src2/bin/Release/TempNotes2.exe`。
+产物在 `src2/bin/Release/随记.exe`。
+
+> 机器上没装 .NET Framework 4.8 目标包时会报 `MSB3644: 找不到 .NETFramework,Version=v4.8 的引用程序集`，
+> 上面那句 `FrameworkPathOverride` 就是让编译直接吃 `src2/refs/` 里那份引用程序集。
 
 **关于 `src2/refs/`**：这个仓库不含它（154MB 的 .NET Framework 引用程序集）。本机编译时把
 `C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\` 下的
@@ -59,6 +64,8 @@ settings.json  配色、置顶、开机自启等
 
 - 双机共用目录时**删除不同步**：A 机删除的笔记，B 机保存时可能被写回来（需要删除墓碑才能做对，未实现）
 - 超高卡片（超过一屏）的拖动体验受几何限制：卡片顶部最多到列表底附近，再往下靠「拖出区外 → 落到末尾」
+- **微信的链接卡片拖不进来**：微信发起拖拽时在系统层就没交出任何数据（实测 `dataTransfer` 里 0 种格式、0 个文件，
+  拖到桌面或记事本同样什么都没掉下来）。用「复制 → 粘贴」代替，粘贴会自动转成 Markdown 链接。
 - 第三方输入法（如豆包的语音输入）在 WebView2 里失效时，通常是 Windows TSF 会话卡死，重启 `ctfmon.exe` 即可，与本程序无关
 
 ## 许可
