@@ -107,6 +107,28 @@ namespace TempNotes
         }
     }
 
+    /// <summary>
+    /// 优先级名称（v2813）。一个颜色一个名字，名字属于「颜色本身」——同色的笔记共用一个名字，
+    /// 显示在待办条左上角，也拿来筛选。
+    /// 单独存 labels.json，不塞进 settings.json：settings.json 是本机的窗口/主题这类偏好，
+    /// 而名字属于数据，要和笔记一起随数据目录跨端同步；哪天换回旧版 exe，也不会被旧版整份覆盖掉。
+    /// </summary>
+    [DataContract]
+    public class LabelFile
+    {
+        [DataMember(Name = "v", Order = 0)] public int Version { get; set; }
+        [DataMember(Name = "labels", Order = 1)] public List<string> Labels { get; set; }
+        // 筛选条里 chip 的先后顺序：0..9 的一个排列。空/缺失 = 按颜色本身的顺序
+        [DataMember(Name = "order", Order = 2)] public List<int> Order { get; set; }
+
+        public LabelFile()
+        {
+            Version = 1;
+            Labels = new List<string>();
+            Order = new List<int>();
+        }
+    }
+
     [DataContract]
     public class Settings
     {

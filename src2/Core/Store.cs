@@ -22,6 +22,13 @@ namespace TempNotes
         public Database Db { get; private set; }
         public Settings Settings { get; private set; }
 
+        // —— v2813：优先级名称 —— 一个颜色一个名字，索引与前端 NOTE_COLORS 一一对应 ——
+        public const int LabelCount = 10;
+        public List<string> Labels { get; private set; }
+        public List<int> LabelOrder { get; private set; }     // chip 顺序：0..9 的一个排列（v2816）
+        public string LabelsPath { get { return Path.Combine(Root, "labels.json"); } }
+        private DateTime _labelsMtime = DateTime.MinValue;   // 已读盘的那份 labels.json 的 mtime（跨端热同步用）
+
         // —— v2810：数据改成「一条笔记一个文件」——
         // 单文件 notes.json 在两台机器同时写时是整个文件级的竞态：谁后写谁把对方的改动整份吃掉，
         // 而且删除无法表达（合并只会「加回来」）。拆分后每个笔记各占一个文件，OneDrive 逐文件同步，
@@ -44,6 +51,8 @@ namespace TempNotes
             new DataContractJsonSerializer(typeof(Note));
         private static readonly DataContractJsonSerializer TombSer =
             new DataContractJsonSerializer(typeof(Tombstone));
+        private static readonly DataContractJsonSerializer LabSer =
+            new DataContractJsonSerializer(typeof(LabelFile));
 
         /// <summary>日志回调（由 MainWindow 注入，写进 bridge.log）。</summary>
         public static Action<string> LogSink;
@@ -200,6 +209,10 @@ namespace TempNotes
                 {
                     if (!File.Exists(targetSet) && File.Exists(Path.Combine(old, "settings.json")))
                         File.Copy(Path.Combine(old, "settings.json"), targetSet, false);
+                    // 优先级名称跟着数据目录一起搬（它是数据，不是本机偏好）
+                    string targetLbl = Path.Combine(newRoot, "labels.json");
+                    if (!File.Exists(targetLbl) && File.Exists(LabelsPath))
+                        File.Copy(LabelsPath, targetLbl, false);
                 }
                 catch { }
 
@@ -293,6 +306,7 @@ namespace TempNotes
 
             Db = new Database();
             Settings = LoadJson<Settings>(Path.Combine(Root, "settings.json"), SetSer) ?? new Settings();
+            Labels = LoadLabels();
 
             _written.Clear();
             _seen.Clear();
@@ -663,6 +677,25 @@ namespace TempNotes
                         changed = true;
                     }
                 }
+
+                // 3) 优先级名称：另一台改了名字，OneDrive 落到本地后 mtime 会变，这里跟上
+                try
+                {
+                    if (File.Exists(LabelsPath))
+                    {
+                        DateTime lm = LastWriteUtc(LabelsPath);
+                        if (lm > _labelsMtime)
+                        {
+                            var oldOrder = LabelOrder;
+                            var nl = LoadLabels();      // 读的同时把 _labelsMtime / LabelOrder 更新掉
+                            bool lch = nl != null && !SameLabelList(nl, Labels);
+                            bool och = !SameIntList(LabelOrder, oldOrder);
+                            if (lch) Labels = nl;
+                            if (lch || och) changed = true;
+                        }
+                    }
+                }
+                catch { }
             }
             catch { return changed; }
 
@@ -681,6 +714,115 @@ namespace TempNotes
         public void SaveSettings()
         {
             WriteAtomic(Path.Combine(Root, "settings.json"), SetSer, Settings);
+        }
+
+        // ---------------- 优先级名称（v2813） ----------------
+
+        private List<string> LoadLabels()
+        {
+            var list = new List<string>();
+            for (int i = 0; i < LabelCount; i++) list.Add("");
+            LabelOrder = DefaultOrder();
+            try
+            {
+                if (!File.Exists(LabelsPath)) { _labelsMtime = DateTime.MinValue; return list; }
+                var f = LoadJson<LabelFile>(LabelsPath, LabSer);
+                if (f != null && f.Labels != null)
+                    for (int i = 0; i < LabelCount && i < f.Labels.Count; i++)
+                        list[i] = ClipLabel(f.Labels[i]);
+                if (f != null && f.Order != null && f.Order.Count > 0)
+                    LabelOrder = NormalizeOrder(f.Order);
+                _labelsMtime = LastWriteUtc(LabelsPath);
+            }
+            catch (Exception ex) { Log("读取优先级名称失败：" + ex.Message); }
+            return list;
+        }
+
+        // ---------------- chip 顺序（v2816） ----------------
+
+        private static List<int> DefaultOrder()
+        {
+            var list = new List<int>();
+            for (int i = 0; i < LabelCount; i++) list.Add(i);
+            return list;
+        }
+
+        /// <summary>把外面传来的顺序理成 0..LabelCount-1 的一个完整排列：丢掉越界/重复的，缺的按原序补到后面。</summary>
+        public static List<int> NormalizeOrder(IEnumerable<int> src)
+        {
+            var seen = new bool[LabelCount];
+            var list = new List<int>();
+            if (src != null)
+                foreach (int v in src)
+                {
+                    if (v < 0 || v >= LabelCount || seen[v]) continue;
+                    seen[v] = true;
+                    list.Add(v);
+                }
+            for (int i = 0; i < LabelCount; i++) if (!seen[i]) list.Add(i);
+            return list;
+        }
+
+        /// <summary>筛选条 chip 拖完的新顺序。返回是否真的有变化。</summary>
+        public bool SetLabelOrder(List<int> order)
+        {
+            var v = NormalizeOrder(order);
+            if (SameIntList(v, LabelOrder)) return false;
+            LabelOrder = v;
+            SaveLabels();
+            return true;
+        }
+
+        /// <summary>名字最多 5 个字（用户定的口径）；去首尾空白，换行/制表压成空格。</summary>
+        public static string ClipLabel(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var t = s.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
+            if (t.Length > 5)
+            {
+                int cut = 5;
+                if (char.IsHighSurrogate(t[cut - 1])) cut--;    // 别把代理对劈成半个字
+                t = t.Substring(0, cut);
+            }
+            return t;
+        }
+
+        /// <summary>设置某个优先级的名字。返回是否真的有变化（没变就不用回推前端）。</summary>
+        public bool SetLabel(int index, string name)
+        {
+            if (index < 0 || index >= LabelCount || Labels == null) return false;
+            var v = ClipLabel(name);
+            if (string.Equals(Labels[index], v, StringComparison.Ordinal)) return false;
+            Labels[index] = v;
+            SaveLabels();
+            return true;
+        }
+
+        public void SaveLabels()
+        {
+            if (Labels == null) return;
+            if (LabelOrder == null) LabelOrder = DefaultOrder();
+            var f = new LabelFile { Version = 1, Labels = new List<string>(Labels), Order = new List<int>(LabelOrder) };
+            WriteAtomic(LabelsPath, LabSer, f);
+            try { _labelsMtime = File.Exists(LabelsPath) ? LastWriteUtc(LabelsPath) : DateTime.MinValue; } catch { }
+        }
+
+        private static bool SameIntList(List<int> a, List<int> b)
+        {
+            if (a == null || b == null) return a == b;
+            if (a.Count != b.Count) return false;
+            for (int i = 0; i < a.Count; i++)
+                if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        private static bool SameLabelList(List<string> a, List<string> b)
+        {
+            if (a == null || b == null) return a == b;
+            if (a.Count != b.Count) return false;
+            for (int i = 0; i < a.Count; i++)
+                if (!string.Equals(a[i], b[i], StringComparison.Ordinal)) return false;
+            return true;
         }
 
         private static void WriteAtomic(string path, DataContractJsonSerializer ser, object obj)

@@ -185,10 +185,41 @@ namespace TempNotes2
                         break;
 
                     case "add":
-                        // add|<urlencoded 文本> —— 用 encodeURIComponent，文本里的 | 与换行都能过
-                        _store.AddNote(p.Length > 1 ? Uri.UnescapeDataString(p[1]) : "", "");
+                        // add|<urlencoded 文本>[|<#RRGGBB 颜色>] —— 用 encodeURIComponent，文本里的 | 与换行都能过。
+                        // 第三段是「新建时继承的颜色」：正在按某个优先级筛选时按 Enter，新卡片直接带上那个颜色，
+                        // 否则刚加的一条会立刻被筛到视图外，看起来像没加上。
+                        _store.AddNote(p.Length > 1 ? Uri.UnescapeDataString(p[1]) : "",
+                                       p.Length > 2 ? p[2] : "");
                         _store.SaveAfterPrune();      // 空文本不该留下空卡片
                         PushAll();
+                        break;
+
+                    case "label":
+                        // label|<优先级索引 0..9>|<urlencoded 名字>  空名字 = 这个优先级不显示标签
+                        if (p.Length > 2)
+                        {
+                            int li;
+                            if (int.TryParse(p[1], out li))
+                            {
+                                string nm = Uri.UnescapeDataString(p[2]);
+                                if (_store.SetLabel(li, nm)) PushState();
+                            }
+                        }
+                        break;
+
+                    case "labelorder":
+                        // labelorder|0,1,2,...  chip 拖完的新顺序（0..9 的一个排列；越界/重复的由 Store 理掉）
+                        if (p.Length > 1 && !string.IsNullOrEmpty(p[1]))
+                        {
+                            var parts = p[1].Split(',');
+                            var ord = new List<int>();
+                            for (int oi = 0; oi < parts.Length; oi++)
+                            {
+                                int v;
+                                if (int.TryParse(parts[oi].Trim(), out v)) ord.Add(v);
+                            }
+                            if (ord.Count > 0 && _store.SetLabelOrder(ord)) PushState();
+                        }
                         break;
 
                     case "update":
@@ -1007,7 +1038,39 @@ namespace TempNotes2
             return sb.ToString();
         }
 
-        /// <summary>推设置状态（配色、置顶、自启、窗口尺寸、数据目录/占用）。</summary>
+        /// <summary>优先级名称数组（10 项，索引对齐前端 NOTE_COLORS）。</summary>
+        private string LabelsJson()
+        {
+            var sb = new System.Text.StringBuilder();
+            var list = _store.Labels;
+            if (list != null)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append(JsonStr(list[i]));
+                }
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>chip 顺序（0..9 的排列）。</summary>
+        private string OrderJson()
+        {
+            var sb = new System.Text.StringBuilder();
+            var list = _store.LabelOrder;
+            if (list != null)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append(list[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>推设置状态（配色、置顶、自启、窗口尺寸、数据目录/占用、优先级名称、chip 顺序）。</summary>
         public void PushState()
         {
             var st = _store.Settings;
@@ -1019,6 +1082,8 @@ namespace TempNotes2
                 "\"closeToTray\":" + (st.CloseToTray ? "true" : "false") + "," +
                 "\"dataRoot\":" + JsonStr(_store.Root) + "," +
                 "\"dataSize\":" + JsonStr(_store.DataSizeText) + "," +
+                "\"labels\":[" + LabelsJson() + "]," +
+                "\"order\":[" + OrderJson() + "]," +
                 "\"winW\":" + (int)st.WinW + "," +
                 "\"winH\":" + (int)st.WinH +
                 "}";

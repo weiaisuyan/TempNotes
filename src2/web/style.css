@@ -787,7 +787,7 @@ body:not(.sorting):not(.scrolling) .note.hovering .foot .acts span{opacity:1}   
 
 .batchbar{
   /* 批量编辑时顶掉输入框：同一位置、同一条基线，列表不会跳 */
-  position:absolute;left:28px;right:18px;top:6px;height:48px;
+  position:absolute;left:8px;right:8px;top:6px;height:48px;
   display:flex;align-items:center;gap:8px;
   min-height:48px;padding:6px 12px;border-radius:10px;
   background:color-mix(in srgb,var(--card) 62%,transparent);
@@ -1124,4 +1124,171 @@ body:not(.sorting):not(.scrolling) .note.hovering .pin{opacity:.72}
   margin-left:auto;margin-right:8px;
   font-size:11.5px;color:var(--muted);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* ==========================================================================
+   v2813：优先级名称（标签）+ 筛选条
+   --------------------------------------------------------------------------
+   1) 标签只是「颜色的名字」，不是每条笔记自己的字段 —— 所以它贴在卡片左上角的
+      绝对定位里（top:-6px），完全不参与 .note 的 flex 布局，正文零位移。
+   2) 筛选条只有「至少起了一个名字」时才出现，没起名字时页面跟以前一模一样。
+   ========================================================================== */
+
+/* 卡片左上角的书签标签：高度 15px，-6px 正好骑在上边框上，
+   卡片上内边距 11px、列表缝 8px，所以它既不会压住正文，也不会被上一张卡吃掉。 */
+.note .ntag{
+  position:absolute;left:15px;top:-6px;
+  height:15px;line-height:15px;padding:0 4px;
+  border-radius:4px;
+  font-size:10px;font-weight:600;letter-spacing:.2px;
+  color:#181410;
+  max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  z-index:3;pointer-events:none;
+  box-shadow:0 1px 3px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.30);
+}
+/* 已完成的卡片：标签跟着卡片一起弱下去，但仍可辨认 */
+.note.done .ntag{opacity:.5;box-shadow:none;font-weight:500}
+
+/* ---------- 筛选条 ---------- */
+.fstrip{
+  flex:0 0 auto;
+  display:none;gap:6px;
+  padding:0 8px 8px 8px;
+  overflow-x:auto;overflow-y:hidden;
+  scrollbar-width:none;
+  /* 右侧渐隐，提示「还能往右滑」，不至于看起来像被截断 */
+  -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 6px,#000 calc(100% - 22px),transparent 100%);
+  mask-image:linear-gradient(90deg,transparent 0,#000 6px,#000 calc(100% - 22px),transparent 100%);
+}
+.fstrip.on{display:flex}
+.fstrip::-webkit-scrollbar{height:0;display:none}
+
+.fstrip .chip{
+  flex:0 0 auto;
+  display:inline-flex;align-items:center;gap:5px;
+  height:22px;padding:0 9px;
+  border-radius:999px;border:1px solid var(--line);
+  background:transparent;color:var(--muted);
+  font:inherit;font-size:11px;line-height:1;
+  cursor:pointer;white-space:nowrap;
+  transition:background .14s ease,border-color .14s ease,color .14s ease,opacity .14s ease;
+}
+.fstrip .chip:hover{background:rgba(255,255,255,.06);color:var(--text)}
+.fstrip .chip i{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.fstrip .chip i.none{background:transparent;border:1px dashed #57665F;box-sizing:border-box}
+.fstrip .chip .n{font-size:10px;font-variant-numeric:tabular-nums;opacity:.7;margin-left:1px}
+/* 0 条：留在原位、变暗，位置不左右乱跳 */
+.fstrip .chip.dim{opacity:.45}
+.fstrip .chip.dim:hover{opacity:.7}
+/* 「全部」选中：中性白底 */
+.fstrip .chip.on{color:var(--text);background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.28)}
+
+/* 清空搜索 / 退筛选的按钮（空态里） */
+.empty.filtered{pointer-events:auto;flex-direction:column;gap:10px}
+.empty.filtered button{
+  pointer-events:auto;
+  font:inherit;font-size:11.5px;
+  color:var(--text);
+  background:rgba(255,255,255,.07);
+  border:1px solid var(--line);
+  padding:5px 14px;border-radius:999px;cursor:pointer;
+  transition:background .15s,border-color .15s;
+}
+.empty.filtered button:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28)}
+
+/* ---------- 设置里的「优先级名称」2 列输入 ---------- */
+.labelgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px}
+.labelgrid .lgrow{
+  display:flex;align-items:center;gap:6px;
+  min-width:0;cursor:text;
+}
+.labelgrid .lgrow i{width:3px;height:16px;border-radius:2px;flex:0 0 auto}
+.labelgrid .lgin{
+  flex:1 1 auto;min-width:0;
+  height:26px;padding:0 7px;
+  background:rgba(255,255,255,.06);
+  border:1px solid transparent;border-radius:7px;
+  color:var(--text);font:inherit;font-size:11.5px;
+  outline:none;
+  transition:background .15s ease,border-color .15s ease;
+}
+.labelgrid .lgin::placeholder{color:color-mix(in srgb,var(--muted) 60%,transparent)}
+.labelgrid .lgin:hover{background:rgba(255,255,255,.09)}
+.labelgrid .lgin:focus{
+  background:rgba(255,255,255,.10);
+  border-color:color-mix(in srgb,var(--accent) 55%,transparent);
+}
+
+/* ===== v2815：切换筛选的过渡（慢一点，不要 toast 那种瞬变） =====
+   列表换视图时整列淡入并轻微上移；chip 的颜色/边框跟着同节奏过渡，眼睛能跟得上。 */
+#list.switching{animation:tnListSwitch .5s cubic-bezier(.25,.6,.3,1)}
+@keyframes tnListSwitch{
+  from{opacity:0;transform:translateY(7px)}
+  to{opacity:1;transform:none}
+}
+.fstrip .chip{
+  transition:background-color .3s ease,border-color .3s ease,color .3s ease,
+             opacity .3s ease,transform .3s ease;
+}
+.fstrip .chip:active{transform:scale(.96)}
+/* ===== v2816：优先级面板改成「两列清单 + 名字」（方案 A） =====
+   圆点 11px + 名字，10 个一屏放完；没起名字的显示「—」。 */
+.colorpop.on{display:block}
+.colorpop{width:auto;min-width:186px}
+.colorpop .cp-g{display:grid;grid-template-columns:1fr 1fr;gap:7px 10px}
+.colorpop .cp-it{
+  display:flex;align-items:center;gap:7px;height:20px;
+  cursor:pointer;border-radius:6px;padding:0 3px;
+  transition:background-color .14s ease;
+}
+.colorpop .cp-it:hover{background:rgba(255,255,255,.07)}
+.colorpop .cp-it b{width:11px;height:11px;border-radius:50%;flex:0 0 auto;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+.colorpop .cp-it span{
+  font-size:10.5px;line-height:1;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.colorpop .cp-it span.e{color:#5d6d66}
+.colorpop .cp-clr{
+  display:flex;align-items:center;gap:6px;height:20px;padding:0 3px;
+  margin-top:8px;border-top:1px solid rgba(255,255,255,.07);
+  color:color-mix(in srgb,var(--muted) 85%,transparent);font-size:10.5px;
+  cursor:pointer;border-radius:6px;
+}
+.colorpop .cp-clr:hover{background:rgba(255,255,255,.07);color:var(--text)}   /* 清除：悬停不变红，跟其他行一致 */
+
+/* chip 拖动换顺序：拖起来那张半透明 + 虚线边，落位即写盘 */
+.fstrip .chip[data-idx]{cursor:grab}
+/* 拖 chip 时跟着光标走的那颗「拖影」：挂在 body 上，位置/样式由 JS 内联管，这里只兜底 */
+.chip-ghost{position:fixed!important;margin:0!important;pointer-events:none!important;
+  z-index:99999!important;cursor:grabbing}
+/* 自己拖 chip（不用原生拖放）：拖动期间整页都是"抓住"的光标，绝不会出现禁止图标 */
+body.chip-dragging,body.chip-dragging *{cursor:grabbing!important;user-select:none!important}
+.fstrip .chip.dragging{
+  opacity:.55;border-style:dashed;border-color:rgba(255,255,255,.42);
+  cursor:grabbing;transform:scale(.97);
+}
+/* v2816 修订：清除行改成居中纯文字（原来的「×」太丑），hover 才微微提亮 */
+.colorpop .cp-clr{
+  justify-content:center;gap:0;height:24px;margin-top:7px;
+  color:color-mix(in srgb,var(--muted) 92%,transparent);font-size:10.5px;letter-spacing:.2px;
+}
+.colorpop .cp-clr:hover{color:var(--text)}
+/* chip 拖动时别让文字被选中（拖到字上会出现蓝色选区） */
+.fstrip{-webkit-user-select:none;user-select:none}
+/* v2818：清除行跟上面的网格/分割线拉开距离（原先文字贴着分割线） */
+.colorpop .cp-clr{
+  height:auto;margin-top:10px;padding:9px 0 2px 0;
+  border-top:1px solid rgba(255,255,255,.075);
+  line-height:1;
+}
+/* v2819：清除行整体下移 —— 分割线改用伪元素单独画，hover 底板只包住文字那一格，
+   不再出现「字下来了、底板没下来」的错位 */
+.colorpop .cp-clr{
+  position:relative;display:flex;align-items:center;justify-content:center;
+  height:24px;padding:0;margin-top:12px;border:0;border-radius:7px;
+  line-height:1;
+}
+.colorpop .cp-clr::before{
+  content:"";position:absolute;left:0;right:0;top:-7px;height:1px;
+  background:rgba(255,255,255,.075);
 }
