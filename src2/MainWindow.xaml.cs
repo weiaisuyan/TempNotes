@@ -27,8 +27,13 @@ namespace TempNotes2
         private bool _pinSyncing;
         private System.Windows.Threading.DispatcherTimer _hideToTrayTimer;
         private DateTime _trayIgnoreClickUntil = DateTime.MinValue;
+        /// <summary>第二个实例通过它请求唤回窗口（命名事件，比按标题找窗口可靠）。</summary>
+        private static System.Threading.EventWaitHandle _showEvent;
+        private static System.Threading.Thread _showWatcher;
+        private const string SHOW_EVENT_NAME = "TempNotes2_ShowRequest";
 
         private const int SW_RESTORE = 9;
+        private const int ASFW_ANY = -1;
         private const int GWL_STYLE = -16;
         private const int WS_CAPTION = 0x00C00000;
         private static readonly uint WM_SHOW_INSTANCE = RegisterWindowMessage("TempNotes2_ShowInstance");
@@ -786,6 +791,7 @@ namespace TempNotes2
             try { StopCursorClamp(); } catch { }
             try { UnregisterHotKey(new WindowInteropHelper(this).Handle, HOTKEY_ID); } catch { }
             if (_tray != null) { _tray.Visible = false; _tray.Dispose(); }
+            try { if (_showEvent != null) { _showEvent.Dispose(); _showEvent = null; } } catch { }
             base.OnClosing(e);
         }
 
@@ -827,6 +833,7 @@ namespace TempNotes2
         [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(int dwProcessId);
         private const int WM_HOTKEY = 0x0312;
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -968,6 +975,7 @@ namespace TempNotes2
                 // 失焦只放开光标约束，看门狗继续盯着左键 —— 不能把收尾也一起丢掉
                 Deactivated += (s6, e6) => StopCursorClamp(true);
 
+                StartShowRequestWatcher();
                 InitHotkeyAndTray(log);
                 if (_store.Settings.Topmost) Topmost = true;
                 UpdatePinState(_store.Settings.Topmost);
@@ -1041,8 +1049,30 @@ namespace TempNotes2
         }
 
         /// <summary>把已有的实例唤到前台（第二个实例启动时用）。</summary>
+        /// <remarks>
+        /// 以前是 FindWindow(null, "随记") + WM_SHOW_INSTANCE：窗口收进托盘（Hide）之后
+        /// 按标题找主窗不可靠，第二个实例唤不起隐藏窗口，用户看到的就是「点图标没反应」。
+        /// 改成命名事件：第一个实例常驻一个后台线程 WaitOne，第二个实例 Set 一下就行，
+        /// 跟窗口找不找得到、可不可见、标题是什么完全无关。
+        /// </remarks>
         private static void ShutdownExisting()
         {
+            // 我们是「用户刚通过图标启动的进程」，此刻只有我们有抢前台的资格。
+            // 把资格让给正在跑的那个实例，否则它就算把窗口显示出来也会被压在其他窗口后面。
+            try { AllowSetForegroundWindow(ASFW_ANY); } catch { }
+
+            try
+            {
+                System.Threading.EventWaitHandle ev;
+                if (System.Threading.EventWaitHandle.TryOpenExisting(SHOW_EVENT_NAME, out ev))
+                {
+                    using (ev) { ev.Set(); }
+                    return;
+                }
+            }
+            catch { }
+
+            // 兜底：老版本没有命名事件时，仍走原来的消息/窗口路径
             try
             {
                 var hwnd = FindWindow(null, "随记");
@@ -1065,6 +1095,41 @@ namespace TempNotes2
                     SetForegroundWindow(pr.MainWindowHandle);
                     break;
                 }
+            }
+            catch { }
+        }
+
+        /// <summary>第一个实例：后台等「唤回窗口」请求，收到就切回 UI 线程做显示动画。</summary>
+        private void StartShowRequestWatcher()
+        {
+            try
+            {
+                _showEvent = new System.Threading.EventWaitHandle(
+                    false, System.Threading.EventResetMode.AutoReset, SHOW_EVENT_NAME);
+                _showWatcher = new System.Threading.Thread(() =>
+                {
+                    while (true)
+                    {
+                        try
+                        {
+                            if (!_showEvent.WaitOne()) break;
+                        }
+                        catch { break; }
+
+                        // WebView2 / WinForms 托盘都在别的线程上，显示窗口必须回 UI 线程
+                        try
+                        {
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                try { ShowFromTrayAnimated(); } catch { }
+                            }));
+                        }
+                        catch { }
+                    }
+                });
+                _showWatcher.IsBackground = true;
+                _showWatcher.Name = "TempNotes show-request watcher";
+                _showWatcher.Start();
             }
             catch { }
         }
@@ -1183,6 +1248,8 @@ namespace TempNotes2
                     SystemCommands.RestoreWindow(this);
 
                 var hwnd = new WindowInteropHelper(this).Handle;
+                // 兜底：WPF 认为可见、但 Win32 层被外部隐藏时，Show() 不会生效
+                if (hwnd != IntPtr.Zero) ShowWindow(hwnd, 5); // SW_SHOW
                 Activate();
                 if (hwnd != IntPtr.Zero) SetForegroundWindow(hwnd);
                 LogMsg("显示窗口（系统还原动画）");
