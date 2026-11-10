@@ -86,6 +86,20 @@ settings.json       配色、置顶、开机自启等
 - **v2796** 窗口置顶移入标题栏（图钉带按压反馈、颜色跟随配色）；跨区拖放按方向落位。
 - **v2795 及更早** 见 `versions/` 下的快照说明。
 
+## 发版清单（每次发版必做，别只打 tag）
+
+1. 改版本号：`MainWindow.xaml.cs` 的启动 banner、`web/app.js` 的 `APPJS_VER`。
+2. 编译：`src2` 下 MSBuild（见上文），确认 `随记.exe` 与 `web/` 都是新产物。
+3. 留快照：`versions/v<日期>-<版本号>/`，放源码 + web + exe。
+4. 打发布包：`_release/TempNotes-<版本号>/` 全量文件 + `TempNotes-<版本号>-win-x64.zip`。
+5. README「版本记录」补一条：这一版改了什么、影响什么。
+6. git：`git add -A` → commit → `git tag v<版本号>` → `git push origin main` → `git push origin v<版本号>`。
+7. **在 GitHub 建 Release 并上传 zip**：
+   `POST /repos/weiaisuyan/TempNotes/releases`（`tag_name`、`name` 写「随记 v<版本号>」、`body` 写本版说明、最新那版带 `make_latest=true`），
+   再 `POST https://uploads.github.com/repos/weiaisuyan/TempNotes/releases/<id>/assets?name=TempNotes-<版本号>-win-x64.zip` 传包。
+   **只 push tag 不建 Release，网页 Releases 就会一直停在旧版本**（2026-11-10 就因此停在 v2795，用户发现后才补）。
+8. 两端安装最新版：笔记本 `D:\程序\TempNotes`、台式机 `%LOCALAPPDATA%\Programs\TempNotes`，装前备份 `随记.exe` 与 `web`。
+
 ## 已知限制
 
 - 双机同用一个目录时，如果两边**同时**编辑同一条笔记，仍是"后写覆盖先写"（按 `updated` 取新）。
