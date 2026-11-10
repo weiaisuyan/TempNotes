@@ -842,6 +842,15 @@ namespace TempNotes2
         // 现在一条笔记一个文件，用 FileSystemWatcher 盯 notes\ 与 deleted\，别的机器一改就重绘。
         private readonly List<FileSystemWatcher> _dbWatchers = new List<FileSystemWatcher>();
         private System.Windows.Threading.DispatcherTimer _dbTimer;
+        private System.Windows.Threading.DispatcherTimer _dbPollTimer;
+
+        // 只认 notes\ 与 deleted\ 下的 json，根目录其它文件（settings.json、backup\ 里的）不算数据变化。
+        private static bool IsDbPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            return path.IndexOf("\\notes\\", StringComparison.OrdinalIgnoreCase) >= 0
+                || path.IndexOf("\\deleted\\", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
 
         private void StartDbWatcher(Action<string> log)
         {
@@ -850,21 +859,40 @@ namespace TempNotes2
                 _dbTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
                 _dbTimer.Tick += (s, e2) => { _dbTimer.Stop(); ReloadFromDisk(log); };
 
-                foreach (var dir in new[] { _store.NotesDir, _store.DeletedDir })
+                // 兜底轮询：OneDrive 同步时有时会整个替换 notes\ 目录，FileSystemWatcher 挂在旧目录上
+                // 就会悄悄失聪（2026-11-10 用户报「笔记本记的待办台式机一直不出现」就是这种）。
+                // 每 4 秒扫一遍目录，只比对 mtime，没变的文件一个都不读。
+                _dbPollTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+                _dbPollTimer.Tick += (s, e2) => ReloadFromDisk(log);
+                _dbPollTimer.Start();
+
+                string root = _store.Root;
+                if (!Directory.Exists(root)) { log("数据目录不存在：" + root); return; }
+
+                var w = new FileSystemWatcher(root, "*.json")
                 {
-                    if (!Directory.Exists(dir)) continue;
-                    var w = new FileSystemWatcher(dir, "*.json")
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.CreationTime | NotifyFilters.Size,
+                    IncludeSubdirectories = true,
+                    EnableRaisingEvents = true
+                };
+                FileSystemEventHandler onEvent = (s, e3) => { if (IsDbPath(e3.FullPath)) BumpDbTimer(); };
+                w.Changed += onEvent;
+                w.Created += onEvent;
+                w.Deleted += onEvent;
+                w.Renamed += (s, e3) => { try { if (IsDbPath(e3.FullPath)) BumpDbTimer(); } catch { } };
+                w.Error += (s, e3) =>
+                {
+                    try
                     {
-                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.CreationTime | NotifyFilters.Size,
-                        IncludeSubdirectories = false,
-                        EnableRaisingEvents = true
-                    };
-                    w.Changed += (s, e3) => BumpDbTimer();
-                    w.Created += (s, e3) => BumpDbTimer();
-                    w.Deleted += (s, e3) => BumpDbTimer();
-                    w.Renamed += (s, e3) => BumpDbTimer();
-                    _dbWatchers.Add(w);
-                }
+                        string msg = "数据目录监听出错，重建监听：" + e3.GetException().Message;
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            try { StopDbWatcher(); log(msg); StartDbWatcher(log); } catch { }
+                        }));
+                    }
+                    catch { }
+                };
+                _dbWatchers.Add(w);
                 log("数据目录监听已启动：" + _store.NotesDir);
             }
             catch (Exception ex) { log("数据目录监听启动失败 " + ex.Message); }
@@ -875,6 +903,7 @@ namespace TempNotes2
             foreach (var w in _dbWatchers) { try { w.EnableRaisingEvents = false; w.Dispose(); } catch { } }
             _dbWatchers.Clear();
             if (_dbTimer != null) { try { _dbTimer.Stop(); } catch { } _dbTimer = null; }
+            if (_dbPollTimer != null) { try { _dbPollTimer.Stop(); } catch { } _dbPollTimer = null; }
         }
 
         private void BumpDbTimer()
@@ -924,7 +953,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2810 数据改为一注一文件 / 删除墓碑同步 / 数据目录实时监听");
+                log("版本 2811 数据一注一文件 / 删除墓碑同步 / 数据目录监听（含 4 秒兜底轮询、监听自愈）");
             _store = new Store();
                 _store.Load();
                 log("Store 载入，笔记 " + _store.Db.Notes.Count + " 条，根目录 " + _store.Root);
