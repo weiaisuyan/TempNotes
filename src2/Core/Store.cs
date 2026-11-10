@@ -22,15 +22,35 @@ namespace TempNotes
         public Database Db { get; private set; }
         public Settings Settings { get; private set; }
 
-        // —— 双机共用一个 OneDrive 目录时的冲突检测 ——
-        private long _loadedRev;                // 内存这份对应的磁盘 rev
-        private DateTime _loadedWriteUtc;       // 载入时磁盘文件的最后写入时间
+        // —— v2810：数据改成「一条笔记一个文件」——
+        // 单文件 notes.json 在两台机器同时写时是整个文件级的竞态：谁后写谁把对方的改动整份吃掉，
+        // 而且删除无法表达（合并只会「加回来」）。拆分后每个笔记各占一个文件，OneDrive 逐文件同步，
+        // 冲突范围从「整库」缩小到「同一条笔记」，删除用 deleted\<id>.json 墓碑表达。
+        public string NotesDir { get { return Path.Combine(Root, "notes"); } }
+        public string DeletedDir { get { return Path.Combine(Root, "deleted"); } }
+
+        private readonly Dictionary<string, string> _written = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // id → 上次写入时的内容指纹
+        private readonly Dictionary<string, DateTime> _seen = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase); // 文件全路径 → 已读 mtime
+
+        private long _loadedRev;                // 兼容旧字段（已不再用于判断）
+        private DateTime _loadedWriteUtc;       // 兼容旧字段（已不再用于判断）
         private bool _saving;                   // 防止 Save ↔ Merge 互相递归
 
         private static readonly DataContractJsonSerializer DbSer =
             new DataContractJsonSerializer(typeof(Database));
         private static readonly DataContractJsonSerializer SetSer =
             new DataContractJsonSerializer(typeof(Settings));
+        private static readonly DataContractJsonSerializer NoteSer =
+            new DataContractJsonSerializer(typeof(Note));
+        private static readonly DataContractJsonSerializer TombSer =
+            new DataContractJsonSerializer(typeof(Tombstone));
+
+        /// <summary>日志回调（由 MainWindow 注入，写进 bridge.log）。</summary>
+        public static Action<string> LogSink;
+        private static void Log(string msg)
+        {
+            try { var s = LogSink; if (s != null) s("Store " + msg); } catch { }
+        }
 
         /// <summary>数据目录的引导文件，放在 exe 同目录。不能写进 settings.json ——
         /// settings.json 本身就在数据目录里，改目录时等于自己搬自己。</summary>
@@ -64,6 +84,8 @@ namespace TempNotes
         private void EnsureDirs()
         {
             Directory.CreateDirectory(Root);
+            Directory.CreateDirectory(NotesDir);
+            Directory.CreateDirectory(DeletedDir);
             Directory.CreateDirectory(BlobDir);
             Directory.CreateDirectory(ThumbDir);
             Directory.CreateDirectory(BackupDir);
@@ -78,6 +100,31 @@ namespace TempNotes
         ///   5) 切到新目录、写 root.txt、重新载入；
         ///   6) 移动语义：确认合并落盘后，删掉源目录里的数据文件（root.txt 在 exe 目录，不参与）。
         /// </summary>
+        /// <summary>读某个数据目录里的全部笔记（兼容旧版单文件 notes.json 与新版 notes\ 目录）。</summary>
+        private List<Note> ReadNotesFromRoot(string root)
+        {
+            var list = new List<Note>();
+            try
+            {
+                string nd = Path.Combine(root, "notes");
+                var files = SafeFiles(nd, "*.json");
+                if (files.Count > 0)
+                {
+                    foreach (var f in files) { var n = TryReadNote(f); if (n != null) list.Add(n); }
+                    return list;
+                }
+                string legacy = Path.Combine(root, "notes.json");
+                if (File.Exists(legacy))
+                {
+                    var db = LoadJson<Database>(legacy, DbSer);
+                    if (db != null && db.Notes != null)
+                        foreach (var n in db.Notes) { if (n == null) continue; Normalize(n); list.Add(n); }
+                }
+            }
+            catch { }
+            return list;
+        }
+
         public bool SwitchRoot(string newRoot, out string msg)
         {
             msg = "";
@@ -93,17 +140,22 @@ namespace TempNotes
                 { msg = "当前目录在新目录里面，不能这样合并"; return false; }
 
                 Directory.CreateDirectory(newRoot);
-                string targetDbPath = Path.Combine(newRoot, "notes.json");
+                Directory.CreateDirectory(Path.Combine(newRoot, "notes"));
+                Directory.CreateDirectory(Path.Combine(newRoot, "deleted"));
 
-                // ---- 1) 目标目录已有数据 ----
-                Database target = null;
-                try { if (File.Exists(targetDbPath)) target = LoadJson<Database>(targetDbPath, DbSer); } catch { }
-                if (target == null) target = new Database();
-                if (target.Notes == null) target.Notes = new List<Note>();
+                // ---- 1) 目标目录已有数据（旧版单文件 / 新版按笔记分文件都认）----
+                var targetNotes = ReadNotesFromRoot(newRoot);
+                var tomb = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                foreach (var t in ReadTombstoneFiles(Path.Combine(newRoot, "deleted")))
+                    if (t != null && !string.IsNullOrEmpty(t.Id)) tomb[t.Id] = t.At;
+                if (Db.Deleted != null)
+                    foreach (var t in Db.Deleted)
+                        if (t != null && !string.IsNullOrEmpty(t.Id))
+                        { long o; if (!tomb.TryGetValue(t.Id, out o) || t.At > o) tomb[t.Id] = t.At; }
 
                 // ---- 2) 合并去重 ----
                 var byId = new Dictionary<string, Note>(StringComparer.OrdinalIgnoreCase);
-                foreach (var n in target.Notes) if (n != null && !string.IsNullOrEmpty(n.Id)) byId[n.Id] = n;
+                foreach (var n in targetNotes) if (n != null && !string.IsNullOrEmpty(n.Id)) byId[n.Id] = n;
 
                 int added = 0, dup = 0, mergedAtt = 0;
                 foreach (var src in Db.Notes)
@@ -114,7 +166,7 @@ namespace TempNotes
                     Note exist;
                     if (!byId.TryGetValue(src.Id, out exist))
                     {
-                        target.Notes.Add(src); byId[src.Id] = src; added++;
+                        byId[src.Id] = src; added++;
                         continue;
                     }
                     dup++;
@@ -128,12 +180,14 @@ namespace TempNotes
                         if (a == null || string.IsNullOrEmpty(a.Id) || ids.Contains(a.Id)) continue;
                         newer.Attachments.Add(a); ids.Add(a.Id); mergedAtt++;
                     }
-                    if (ReferenceEquals(newer, src))
-                    {
-                        int idx = target.Notes.IndexOf(exist);
-                        if (idx >= 0) target.Notes[idx] = src;
-                        byId[src.Id] = src;
-                    }
+                    byId[src.Id] = newer;
+                }
+
+                // 墓碑说话：删过的条目不再写回目标目录
+                foreach (var t in tomb)
+                {
+                    Note n;
+                    if (byId.TryGetValue(t.Key, out n) && t.Value >= n.UpdatedAt) byId.Remove(t.Key);
                 }
 
                 // ---- 3) 附件实体 / 缩略图 ----
@@ -141,7 +195,6 @@ namespace TempNotes
                 CopyTreeInto(BlobDir, Path.Combine(newRoot, "blobs"), ref copied, ref skipped);
                 CopyTreeInto(ThumbDir, Path.Combine(newRoot, "thumbs"), ref copied, ref skipped);
 
-                // 目标没有设置文件时，把本机设置带过去（有就以目标的为准）
                 string targetSet = Path.Combine(newRoot, "settings.json");
                 try
                 {
@@ -151,14 +204,18 @@ namespace TempNotes
                 catch { }
 
                 // ---- 4) 落盘并校验 ----
-                // 关键：写盘前先把纳管附件的绝对路径改到新根下。不重写的话，迁移完成后
-                // 所有附件都指向已被清空的旧目录 —— 缩略图打不开、清空回收站也删不掉实体
-                // （File.Exists 为 false，删除分支被跳过，新目录里就积一堆永久死文件）。
-                RepathAttachments(target, newRoot);
-                WriteAtomic(targetDbPath, DbSer, target);
-                if (!File.Exists(targetDbPath)) { msg = "写入新目录失败"; return false; }
-                Database check = LoadJson<Database>(targetDbPath, DbSer);
-                int want = target.Notes.Count, got = (check != null && check.Notes != null) ? check.Notes.Count : -1;
+                var merged = new Database { Notes = new List<Note>(byId.Values), Deleted = new List<Tombstone>() };
+                foreach (var t in tomb) merged.Deleted.Add(new Tombstone { Id = t.Key, At = t.Value });
+                RepathAttachments(merged, newRoot);
+
+                foreach (var n in merged.Notes) WriteAtomic(Path.Combine(newRoot, "notes", n.Id + ".json"), NoteSer, n);
+                foreach (var t in merged.Deleted) WriteAtomic(Path.Combine(newRoot, "deleted", t.Id + ".json"), TombSer, t);
+                // 旧版单文件留着会和 notes\ 打架，迁移完就改名留档
+                string legacyTarget = Path.Combine(newRoot, "notes.json");
+                try { if (File.Exists(legacyTarget)) File.Move(legacyTarget, legacyTarget + ".migrated-" + DateTime.Now.ToString("yyyyMMdd-HHmmss")); } catch { }
+
+                var check = ReadNotesFromRoot(newRoot);
+                int want = merged.Notes.Count, got = check.Count;
                 if (got != want) { msg = "校验失败：应写 " + want + " 条，实际读回 " + got + " 条"; return false; }
 
                 // ---- 5) 切换 ----
@@ -198,7 +255,7 @@ namespace TempNotes
         private static void DeleteDataFiles(string root)
         {
             if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
-            foreach (var dir in new[] { "blobs", "thumbs", "backup" })
+            foreach (var dir in new[] { "notes", "deleted", "blobs", "thumbs", "backup" })
             {
                 try { var d = Path.Combine(root, dir); if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
             }
@@ -231,21 +288,228 @@ namespace TempNotes
 
         public void Load()
         {
-            Db = LoadJson<Database>(DbPath, DbSer) ?? new Database();
+            EnsureDirs();
+            MigrateLegacyDb();                       // 老的单文件 notes.json → notes\<id>.json（只做一次，原文件改名留档）
+
+            Db = new Database();
             Settings = LoadJson<Settings>(Path.Combine(Root, "settings.json"), SetSer) ?? new Settings();
-            if (Db.Notes == null) Db.Notes = new List<Note>();
-            foreach (var n in Db.Notes)
+
+            _written.Clear();
+            _seen.Clear();
+
+            var byId = new Dictionary<string, Note>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in SafeFiles(NotesDir, "*.json"))
             {
-                if (n.Attachments == null) n.Attachments = new List<Attachment>();
-                if (n.Text == null) n.Text = "";
-                // 旧档没有 sort 字段：用创建时间补，顺序与旧版按 CreatedAt 排完全一致
-                if (n.Sort == 0) n.Sort = n.CreatedAt;
+                var n = TryReadNote(f);
+                if (n == null) continue;
+                _seen[f] = LastWriteUtc(f);
+                Note exist;
+                if (!byId.TryGetValue(n.Id, out exist)) byId[n.Id] = n;
+                else if (n.UpdatedAt > exist.UpdatedAt) byId[n.Id] = n;   // 同 id 多份 = 同步冲突副本，取新的
             }
+            Db.Notes = byId.Values.ToList();
+            Db.Deleted = ReadTombstoneFiles();
+
+            ApplyTombstones();                        // 别的机器删掉的，这里不要复活
+            PruneTombstones();
+            foreach (var n in Db.Notes) _written[n.Id] = Signature(n);
+
             int prunedOnLoad = PruneEmptyNotes();     // 启动即清掉历史遗留的空卡片
             _loadedRev = Db.Rev;
-            try { _loadedWriteUtc = File.Exists(DbPath) ? File.GetLastWriteTimeUtc(DbPath) : DateTime.MinValue; }
-            catch { _loadedWriteUtc = DateTime.MinValue; }
-            if (prunedOnLoad > 0) Save(true);
+            _loadedWriteUtc = DateTime.UtcNow;
+            if (prunedOnLoad > 0) WriteChanged();
+            TryBackupOnStart();
+        }
+
+        /// <summary>老版本把全部笔记放在 notes.json 里。首次升级到 v2810 时拆成一注一文件。</summary>
+        private void MigrateLegacyDb()
+        {
+            try
+            {
+                if (SafeFiles(NotesDir, "*.json").Count > 0) return;      // 已经拆过了
+                if (!File.Exists(DbPath)) return;
+                var db = LoadJson<Database>(DbPath, DbSer);
+                if (db == null || db.Notes == null) return;
+
+                int wrote = 0;
+                foreach (var n in db.Notes)
+                {
+                    if (n == null || string.IsNullOrEmpty(n.Id)) continue;
+                    Normalize(n);
+                    WriteAtomic(NotePath(n.Id), NoteSer, n);
+                    wrote++;
+                }
+                if (db.Deleted != null)
+                    foreach (var t in db.Deleted) if (t != null && !string.IsNullOrEmpty(t.Id)) WriteTombstoneFile(t.Id, t.At);
+
+                // 原文件改名留档，不删 —— 出问题时还能人工翻回旧档
+                string keep = DbPath + ".migrated-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                try { File.Move(DbPath, keep); } catch { }
+                Log("数据已升级为按笔记分文件：" + wrote + " 条（旧档留档 " + Path.GetFileName(keep) + "）");
+            }
+            catch (Exception ex) { Log("升级数据结构失败：" + ex.Message); }
+        }
+
+        private static void Normalize(Note n)
+        {
+            if (n.Attachments == null) n.Attachments = new List<Attachment>();
+            if (n.Text == null) n.Text = "";
+            if (n.Sort == 0) n.Sort = n.CreatedAt;
+        }
+
+        private Note TryReadNote(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+                Note n;
+                using (var fs = File.OpenRead(path)) n = (Note)NoteSer.ReadObject(fs);
+                if (n == null || string.IsNullOrEmpty(n.Id)) return null;
+                Normalize(n);
+                return n;
+            }
+            catch { return null; }   // 正在被同步/半写状态：下次扫描再读
+        }
+
+        private string NotePath(string id) { return Path.Combine(NotesDir, id + ".json"); }
+        private string TombstonePath(string id) { return Path.Combine(DeletedDir, id + ".json"); }
+
+        private void WriteNoteFile(Note n)
+        {
+            WriteAtomic(NotePath(n.Id), NoteSer, n);
+            _seen[NotePath(n.Id)] = LastWriteUtc(NotePath(n.Id));
+            _written[n.Id] = Signature(n);
+        }
+
+        private void DeleteNoteFile(string id)
+        {
+            try { var p = NotePath(id); if (File.Exists(p)) File.Delete(p); _seen.Remove(p); } catch { }
+            _written.Remove(id);
+        }
+
+        private void WriteTombstoneFile(string id, long at)
+        {
+            var t = new Tombstone { Id = id, At = at };
+            WriteAtomic(TombstonePath(id), TombSer, t);
+        }
+
+        private static List<Tombstone> ReadTombstoneFiles(string dir)
+        {
+            var list = new List<Tombstone>();
+            try
+            {
+                if (!Directory.Exists(dir)) return list;
+                foreach (var f in Directory.GetFiles(dir, "*.json"))
+                {
+                    try
+                    {
+                        using (var fs = File.OpenRead(f)) { var t = (Tombstone)TombSer.ReadObject(fs); if (t != null && !string.IsNullOrEmpty(t.Id)) list.Add(t); }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        private List<Tombstone> ReadTombstoneFiles() { return ReadTombstoneFiles(DeletedDir); }
+
+        /// <summary>内存里的墓碑落到笔记列表上：更新时间早于删除时间的条目直接消失。</summary>
+        private void ApplyTombstones()
+        {
+            if (Db.Deleted == null || Db.Deleted.Count == 0) return;
+            var tomb = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in Db.Deleted)
+            {
+                if (t == null || string.IsNullOrEmpty(t.Id)) continue;
+                long old;
+                if (!tomb.TryGetValue(t.Id, out old) || t.At > old) tomb[t.Id] = t.At;
+            }
+            for (int i = Db.Notes.Count - 1; i >= 0; i--)
+            {
+                var n = Db.Notes[i];
+                long at;
+                if (n != null && tomb.TryGetValue(n.Id, out at) && at >= n.UpdatedAt)
+                {
+                    Db.Notes.RemoveAt(i);
+                    DeleteNoteFile(n.Id);
+                }
+            }
+        }
+
+        private bool IsDeleted(string id, long updatedAt)
+        {
+            if (Db.Deleted == null) return false;
+            foreach (var t in Db.Deleted)
+                if (t != null && string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase) && t.At >= updatedAt) return true;
+            return false;
+        }
+
+        private void MarkDeleted(string id, long at)
+        {
+            if (string.IsNullOrEmpty(id)) return;
+            if (Db.Deleted == null) Db.Deleted = new List<Tombstone>();
+            bool found = false;
+            foreach (var t in Db.Deleted)
+                if (t != null && string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase)) { t.At = Math.Max(t.At, at); found = true; break; }
+            if (!found) Db.Deleted.Add(new Tombstone { Id = id, At = at });
+            try { WriteTombstoneFile(id, at); } catch { }
+        }
+
+        /// <summary>墓碑留 30 天足够所有机器同步到；过期就删文件，免得目录越堆越多。</summary>
+        private void PruneTombstones()
+        {
+            try
+            {
+                if (Db.Deleted == null) { Db.Deleted = new List<Tombstone>(); return; }
+                long cutoff = Note.NowMs() - 30L * 24 * 3600 * 1000;
+                Db.Deleted.RemoveAll(t => t == null || t.At < cutoff);
+                if (!Directory.Exists(DeletedDir)) return;
+                foreach (var f in Directory.GetFiles(DeletedDir, "*.json"))
+                {
+                    try { if (File.GetLastWriteTimeUtc(f) < DateTime.UtcNow.AddDays(-30)) File.Delete(f); } catch { }
+                }
+            }
+            catch { }
+        }
+
+        private static string Signature(Note n)
+        {
+            if (n == null) return "";
+            var sb = new StringBuilder(64);
+            sb.Append(n.UpdatedAt).Append('|').Append(n.Status).Append('|').Append(n.Sort).Append('|')
+              .Append(n.Pinned ? 1 : 0).Append('|').Append(n.Color ?? "").Append('|')
+              .Append(n.Attachments == null ? 0 : n.Attachments.Count).Append('|')
+              .Append(n.Text == null ? "" : n.Text);
+            return sb.ToString();
+        }
+
+        private static List<string> SafeFiles(string dir, string pattern)
+        {
+            try { return Directory.Exists(dir) ? new List<string>(Directory.GetFiles(dir, pattern)) : new List<string>(); }
+            catch { return new List<string>(); }
+        }
+
+        private static DateTime LastWriteUtc(string path)
+        {
+            try { return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue; }
+            catch { return DateTime.MinValue; }
+        }
+
+        /// <summary>启动时留一份快照（单文件、旧格式，方便人工回滚），只留最近 7 份。</summary>
+        private void TryBackupOnStart()
+        {
+            try
+            {
+                if (Db == null || Db.Notes == null || Db.Notes.Count == 0) return;
+                var snap = new Database { Rev = Db.Rev, Notes = Db.Notes, Deleted = Db.Deleted };
+                string name = "notes-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json";
+                WriteAtomic(Path.Combine(BackupDir, name), DbSer, snap);
+                var old = new DirectoryInfo(BackupDir).GetFiles("notes-*.json")
+                    .OrderByDescending(f => f.CreationTimeUtc).Skip(7).ToList();
+                foreach (var f in old) { try { f.Delete(); } catch { } }
+            }
+            catch { }
         }
 
         private static T LoadJson<T>(string path, DataContractJsonSerializer ser) where T : class
@@ -274,17 +538,28 @@ namespace TempNotes
         /// </summary>
         public void Save(bool skipMerge)
         {
-            // 写之前先看磁盘是不是被另一台机器改过 —— 直接覆盖会把它那边的改动整份吃掉。
+            // v2810 起 Save 只写「内容变了的那几条」，不再整份重写 notes.json。
+            // 写前仍先收一眼磁盘（另一台刚改过的条目），避免把对方的新内容覆盖掉。
             if (!skipMerge && !_saving)
             {
                 _saving = true;
-                try { MergeFromDisk(); } catch { } finally { _saving = false; }
+                try { PullFromDiskCore(false); } catch { } finally { _saving = false; }
             }
-            Db.Rev = Math.Max(Db.Rev, _loadedRev) + 1;
-            WriteAtomic(DbPath, DbSer, Db);
-            _loadedRev = Db.Rev;
-            try { _loadedWriteUtc = File.Exists(DbPath) ? File.GetLastWriteTimeUtc(DbPath) : DateTime.MinValue; }
-            catch { _loadedWriteUtc = DateTime.MinValue; }
+            WriteChanged();
+        }
+
+        /// <summary>只为内容有变化的笔记写文件；没变的文件一个都不碰（减少与 OneDrive 同步撞车）。</summary>
+        private void WriteChanged()
+        {
+            foreach (var n in Db.Notes.ToList())
+            {
+                if (n == null || string.IsNullOrEmpty(n.Id)) continue;
+                string sig = Signature(n);
+                string old;
+                if (_written.TryGetValue(n.Id, out old) && old == sig && File.Exists(NotePath(n.Id))) continue;
+                try { WriteNoteFile(n); } catch { }
+            }
+            _loadedWriteUtc = DateTime.UtcNow;
         }
 
         /// <summary>
@@ -305,6 +580,8 @@ namespace TempNotes
                     if (n.Status == 2) continue;                                  // 回收站保留
                     if (!string.IsNullOrWhiteSpace(n.Text)) continue;              // 有文字
                     if (n.Attachments != null && n.Attachments.Count > 0) continue; // 有附件
+                    MarkDeleted(n.Id, Math.Max(Note.NowMs(), n.UpdatedAt));   // 空卡片也别让它从别的机器"复活"
+                    DeleteNoteFile(n.Id);
                     Db.Notes.RemoveAt(i);
                     removed++;
                 }
@@ -321,69 +598,83 @@ namespace TempNotes
         }
 
         /// <summary>
-        /// 磁盘上的 notes.json 比内存这份新时，按 id 合并进来（同 id 取 UpdatedAt 新的，
-        /// 磁盘多出来的加入，内存多出来的保留）。只改内存，不写盘 —— 由调用方决定何时落盘。
-        /// 返回是否真的合进了东西。**不处理删除**：另一台删掉的条目在这里会“复活”，
-        /// 这是本期已知取舍（见 versions/v2026-11-09-2762/README.md）。
+        /// 把磁盘上「新出现 / 被改过」的笔记文件并进内存（同 id 取 UpdatedAt 新的），
+        /// 并按 deleted\ 里的墓碑删掉本机还留着的条目。返回是否有变化。
+        /// v2810 起逐文件比对 mtime，只有变过的那几条才读盘。
         /// </summary>
         public bool MergeFromDisk(bool force = false)
         {
-            // 注意：这里不能判 _saving —— Save() 会在 _saving=true 的情况下调用本方法。
-            // 本方法只改内存、自己从不落盘，不存在 Save↔Merge 递归。
-            DateTime diskTime;
-            try
-            {
-                if (!File.Exists(DbPath)) return false;
-                diskTime = File.GetLastWriteTimeUtc(DbPath);
-            }
-            catch { return false; }
-
-            if (!force && diskTime <= _loadedWriteUtc) return false;   // 磁盘没动过，快路径
-
-            Database disk = null;
-            try { disk = LoadJson<Database>(DbPath, DbSer); } catch { }
-            if (disk == null || disk.Notes == null) return false;
-
-            if (!force && disk.Rev <= _loadedRev)
-            {
-                // 文件被动过（OneDrive 刷新元数据）但内容代数没前进，收下时间戳就走
-                _loadedWriteUtc = diskTime;
-                return false;
-            }
-
-            int added = 0, replaced = 0;
-            var byId = new Dictionary<string, Note>(StringComparer.OrdinalIgnoreCase);
-            foreach (var n in Db.Notes) if (n != null && !string.IsNullOrEmpty(n.Id)) byId[n.Id] = n;
-
-            foreach (var dn in disk.Notes)
-            {
-                if (dn == null || string.IsNullOrEmpty(dn.Id)) continue;
-                if (dn.Attachments == null) dn.Attachments = new List<Attachment>();
-                if (dn.Text == null) dn.Text = "";
-                if (dn.Sort == 0) dn.Sort = dn.CreatedAt;
-
-                Note mine;
-                if (!byId.TryGetValue(dn.Id, out mine)) { Db.Notes.Add(dn); byId[dn.Id] = dn; added++; continue; }
-                if (dn.UpdatedAt > mine.UpdatedAt)
-                {
-                    int idx = Db.Notes.IndexOf(mine);
-                    if (idx >= 0) Db.Notes[idx] = dn;
-                    byId[dn.Id] = dn;
-                    replaced++;
-                }
-            }
-
-            _loadedRev = Math.Max(_loadedRev, disk.Rev);
-            _loadedWriteUtc = diskTime;
-            return added + replaced > 0;
+            return PullFromDiskCore(false, force);
         }
 
-        /// <summary>外面（窗口激活时）用：磁盘有了新东西就合并并落盘，返回是否有变化。</summary>
+        private bool PullFromDiskCore(bool writeBack, bool force = false)
+        {
+            bool changed = false;
+            try
+            {
+                // 1) 墓碑：另一台永久删除的，本机也要消失（这是旧版做不到的）
+                var diskTomb = ReadTombstoneFiles();
+                if (diskTomb.Count > 0)
+                {
+                    if (Db.Deleted == null) Db.Deleted = new List<Tombstone>();
+                    foreach (var t in diskTomb)
+                    {
+                        bool known = false;
+                        foreach (var m in Db.Deleted)
+                            if (m != null && string.Equals(m.Id, t.Id, StringComparison.OrdinalIgnoreCase))
+                            { m.At = Math.Max(m.At, t.At); known = true; break; }
+                        if (!known) Db.Deleted.Add(new Tombstone { Id = t.Id, At = t.At });
+
+                        for (int i = Db.Notes.Count - 1; i >= 0; i--)
+                        {
+                            var n = Db.Notes[i];
+                            if (n != null && string.Equals(n.Id, t.Id, StringComparison.OrdinalIgnoreCase) && t.At >= n.UpdatedAt)
+                            {
+                                Db.Notes.RemoveAt(i);
+                                _written.Remove(n.Id);
+                                try { DeleteNoteFile(n.Id); } catch { }   // 墓碑到了，本机的笔记文件也一起删掉，别留孤儿
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+
+                // 2) 笔记文件：只读 mtime 变过的
+                foreach (var f in SafeFiles(NotesDir, "*.json"))
+                {
+                    DateTime mtime = LastWriteUtc(f);
+                    DateTime prev;
+                    if (_seen.TryGetValue(f, out prev) && mtime <= prev && !force) continue;
+                    var dn = TryReadNote(f);
+                    if (dn == null) continue;
+                    _seen[f] = mtime;
+                    if (IsDeleted(dn.Id, dn.UpdatedAt)) continue;      // 已删的不复活
+
+                    Note mine = null;
+                    for (int i = 0; i < Db.Notes.Count; i++)
+                        if (string.Equals(Db.Notes[i].Id, dn.Id, StringComparison.OrdinalIgnoreCase)) { mine = Db.Notes[i]; break; }
+
+                    if (mine == null) { Db.Notes.Add(dn); _written[dn.Id] = ""; changed = true; }
+                    else if (dn.UpdatedAt > mine.UpdatedAt)
+                    {
+                        int idx = Db.Notes.IndexOf(mine);
+                        Db.Notes[idx] = dn;
+                        _written[dn.Id] = "";
+                        changed = true;
+                    }
+                }
+            }
+            catch { return changed; }
+
+            if (changed && writeBack) WriteChanged();
+            return changed;
+        }
+
+        /// <summary>外面（窗口激活 / 文件监听）用：磁盘有新东西就并进内存并落盘，返回是否有变化。</summary>
         public bool PullFromDisk()
         {
             bool changed;
-            try { changed = MergeFromDisk(force: true); } catch { return false; }
-            if (changed) Save();
+            try { changed = PullFromDiskCore(true); } catch { return false; }
             return changed;
         }
 
@@ -410,19 +701,10 @@ namespace TempNotes
             File.Move(tmp, path);
         }
 
-        /// <summary>每次启动备份一份，只留最近 7 份。</summary>
+        /// <summary>每次启动备份一份（单文件、旧格式，方便人工回滚），只留最近 7 份。</summary>
         public void BackupOnStart()
         {
-            if (!File.Exists(DbPath)) return;
-            try
-            {
-                string name = "notes-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json";
-                File.Copy(DbPath, Path.Combine(BackupDir, name), true);
-                var old = new DirectoryInfo(BackupDir).GetFiles("notes-*.json")
-                    .OrderByDescending(f => f.CreationTimeUtc).Skip(7).ToList();
-                foreach (var f in old) { try { f.Delete(); } catch { } }
-            }
-            catch { }
+            TryBackupOnStart();
         }
 
         // ---------------- 笔记操作 ----------------
@@ -614,9 +896,14 @@ namespace TempNotes
             Touch(n);
         }
 
+        /// <summary>
+        /// 永久删除一条笔记：写墓碑（别的机器同步到之后也会删掉，不会再"复活"）、
+        /// 删掉这条自己的笔记文件、回收纳管的附件实体。
+        /// </summary>
         public void Purge(Note n)
         {
-            foreach (var a in n.Attachments.ToList())
+            if (n == null) return;
+            foreach (var a in (n.Attachments ?? new List<Attachment>()).ToList())
             {
                 if (!a.Linked)
                 {
@@ -624,6 +911,8 @@ namespace TempNotes
                 }
                 DeleteThumbFiles(a);
             }
+            MarkDeleted(n.Id, Math.Max(Note.NowMs(), n.UpdatedAt));
+            DeleteNoteFile(n.Id);
             Db.Notes.Remove(n);
             try
             {
@@ -632,7 +921,6 @@ namespace TempNotes
                     Directory.Delete(dir);
             }
             catch { }
-            Save();
         }
 
         public string ThumbPath(Attachment a)

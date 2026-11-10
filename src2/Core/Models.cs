@@ -71,6 +71,18 @@ namespace TempNotes
         public bool IsTrash { get { return Status == 2; } }
     }
 
+    /// <summary>
+    /// 删除墓碑（v2810 引入）。永久删除一条笔记时写一个 deleted\&lt;id&gt;.json，
+    /// 另一台机器同步到之后按它把本地还留着的同 id 笔记删掉 —— 旧版只能"加回来"，删不掉。
+    /// </summary>
+    [DataContract]
+    public class Tombstone
+    {
+        [DataMember(Name = "id", Order = 0)] public string Id { get; set; }
+        /// <summary>删除时刻（ms）。更新时间早于它的同 id 笔记一律视为已删。</summary>
+        [DataMember(Name = "at", Order = 1)] public long At { get; set; }
+    }
+
     [DataContract]
     public class Database
     {
@@ -80,13 +92,18 @@ namespace TempNotes
         /// <summary>
         /// 保存代数，每写一次 +1。两台机器共用同一个 OneDrive 目录时，靠它判断
         /// 磁盘上的那份是不是比本机内存里的新（旧档没有这个字段 = 0）。
+        /// v2810 起数据拆成一注一文件，这个字段只为兼容旧档/备份保留，不再参与判断。
         /// </summary>
         [DataMember(Name = "rev", Order = 2)] public long Rev { get; set; }
+
+        /// <summary>墓碑列表（只在旧格式备份里出现；正式存储是 deleted 目录下的每个文件）。</summary>
+        [DataMember(Name = "deleted", Order = 3)] public List<Tombstone> Deleted { get; set; }
 
         public Database()
         {
             Version = 1;
             Notes = new List<Note>();
+            Deleted = new List<Tombstone>();
         }
     }
 

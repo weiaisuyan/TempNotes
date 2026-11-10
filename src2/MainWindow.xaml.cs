@@ -789,6 +789,7 @@ namespace TempNotes2
                 }
             }
             try { StopCursorClamp(); } catch { }
+            try { StopDbWatcher(); } catch { }
             try { UnregisterHotKey(new WindowInteropHelper(this).Handle, HOTKEY_ID); } catch { }
             if (_tray != null) { _tray.Visible = false; _tray.Dispose(); }
             try { if (_showEvent != null) { _showEvent.Dispose(); _showEvent = null; } } catch { }
@@ -836,6 +837,76 @@ namespace TempNotes2
         [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(int dwProcessId);
         private const int WM_HOTKEY = 0x0312;
 
+        // ================= 数据目录文件监听（v2810） =================
+        // 单文件 notes.json 时代，只能靠「切回窗口」拉一次，窗口常开就永远显示旧数据。
+        // 现在一条笔记一个文件，用 FileSystemWatcher 盯 notes\ 与 deleted\，别的机器一改就重绘。
+        private readonly List<FileSystemWatcher> _dbWatchers = new List<FileSystemWatcher>();
+        private System.Windows.Threading.DispatcherTimer _dbTimer;
+
+        private void StartDbWatcher(Action<string> log)
+        {
+            try
+            {
+                _dbTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+                _dbTimer.Tick += (s, e2) => { _dbTimer.Stop(); ReloadFromDisk(log); };
+
+                foreach (var dir in new[] { _store.NotesDir, _store.DeletedDir })
+                {
+                    if (!Directory.Exists(dir)) continue;
+                    var w = new FileSystemWatcher(dir, "*.json")
+                    {
+                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.CreationTime | NotifyFilters.Size,
+                        IncludeSubdirectories = false,
+                        EnableRaisingEvents = true
+                    };
+                    w.Changed += (s, e3) => BumpDbTimer();
+                    w.Created += (s, e3) => BumpDbTimer();
+                    w.Deleted += (s, e3) => BumpDbTimer();
+                    w.Renamed += (s, e3) => BumpDbTimer();
+                    _dbWatchers.Add(w);
+                }
+                log("数据目录监听已启动：" + _store.NotesDir);
+            }
+            catch (Exception ex) { log("数据目录监听启动失败 " + ex.Message); }
+        }
+
+        private void StopDbWatcher()
+        {
+            foreach (var w in _dbWatchers) { try { w.EnableRaisingEvents = false; w.Dispose(); } catch { } }
+            _dbWatchers.Clear();
+            if (_dbTimer != null) { try { _dbTimer.Stop(); } catch { } _dbTimer = null; }
+        }
+
+        private void BumpDbTimer()
+        {
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_dbTimer == null) return;
+                    _dbTimer.Stop();
+                    _dbTimer.Start();
+                }));
+            }
+            catch { }
+        }
+
+        private void ReloadFromDisk(Action<string> log)
+        {
+            try
+            {
+                if (_store == null || _bridge == null) return;
+                if (_store.PullFromDisk())
+                {
+                    _bridge.PushAll();
+                    _bridge.PushState();
+                    _bridge.PushTrash();
+                    log("检测到数据目录变化：已合并并重绘（" + _store.Db.Notes.Count + " 条）");
+                }
+            }
+            catch (Exception ex) { log("合并磁盘失败 " + ex.Message); }
+        }
+
         private async void OnLoaded(object sender, RoutedEventArgs e)
         {
             string root = AppDomain.CurrentDomain.BaseDirectory;
@@ -850,9 +921,10 @@ namespace TempNotes2
             try
             {
                 LogMsg = log;
+                Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2790 正文预览展开 / 表格换行与右缘对齐 / 程序名改为随记");
+                log("版本 2810 数据改为一注一文件 / 删除墓碑同步 / 数据目录实时监听");
             _store = new Store();
                 _store.Load();
                 log("Store 载入，笔记 " + _store.Db.Notes.Count + " 条，根目录 " + _store.Root);
@@ -887,6 +959,9 @@ namespace TempNotes2
 
                 _bridge = new Bridge(_store, Eval, log);
                 _bridge.OnDataRootChanged = ApplyDataRoot;
+
+                // v2810：数据是「一条笔记一个文件」，改成实时监听目录，不再只等窗口激活。
+                StartDbWatcher(log);
 
                 // 两机共用一个 OneDrive 目录时：切回本窗口就拉一次磁盘，别一直用启动时那份旧数据。
                 // 只合并、不强制覆盖（同 id 取 UpdatedAt 新的），删除不同步（本期已知取舍）。
