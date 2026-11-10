@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-10-2827";
+var APPJS_VER = "2026-11-10-2828";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */

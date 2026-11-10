@@ -723,19 +723,78 @@ namespace TempNotes
             var list = new List<string>();
             for (int i = 0; i < LabelCount; i++) list.Add("");
             LabelOrder = DefaultOrder();
-            try
+            if (!File.Exists(LabelsPath)) { _labelsMtime = DateTime.MinValue; return list; }
+
+            // v2828：labels.json 躺在 OneDrive 目录里，另一端或 OneDrive 自己随时可能在写它。
+            // 以前这里复用 LoadJson —— 它把"读的时候被占用/读到半截"也当成坏档，直接改名成 .corrupt，
+            // 等于一次偶发占用就把用户起的名字从界面上抹掉了（2026-11-10 实际发生过一次）。
+            // 现在：共享读 + 短重试；读不到就先当没改动，等下一次轮询；只有真的解析不了才留证，
+            // 而且只往 backup/ 复制一份，绝不动原名。
+            byte[] data = ReadSharedBytes(LabelsPath);
+            if (data == null || data.Length == 0)
             {
-                if (!File.Exists(LabelsPath)) { _labelsMtime = DateTime.MinValue; return list; }
-                var f = LoadJson<LabelFile>(LabelsPath, LabSer);
-                if (f != null && f.Labels != null)
-                    for (int i = 0; i < LabelCount && i < f.Labels.Count; i++)
-                        list[i] = ClipLabel(f.Labels[i]);
-                if (f != null && f.Order != null && f.Order.Count > 0)
-                    LabelOrder = NormalizeOrder(f.Order);
-                _labelsMtime = LastWriteUtc(LabelsPath);
+                Log("labels.json 暂时读不到（可能正被写入），稍后重试");
+                _labelsMtime = DateTime.MinValue;
+                return list;
             }
-            catch (Exception ex) { Log("读取优先级名称失败：" + ex.Message); }
+
+            LabelFile f = null;
+            try { using (var ms = new MemoryStream(data)) f = (LabelFile)LabSer.ReadObject(ms); }
+            catch { f = null; }
+
+            if (f == null)
+            {
+                // 也许是读到半截：等一下再读一次，成了就正常用
+                System.Threading.Thread.Sleep(160);
+                byte[] again = ReadSharedBytes(LabelsPath);
+                if (again != null && again.Length > 0)
+                {
+                    try { using (var ms = new MemoryStream(again)) f = (LabelFile)LabSer.ReadObject(ms); }
+                    catch { f = null; }
+                    if (f != null) data = again;
+                }
+            }
+
+            if (f == null)
+            {
+                try
+                {
+                    Directory.CreateDirectory(BackupDir);
+                    File.WriteAllBytes(Path.Combine(BackupDir, "labels-broken-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json"), data);
+                }
+                catch { }
+                Log("labels.json 解析失败，已复制一份到 backup/ 留证，本次先用默认值（原名不动）");
+                _labelsMtime = LastWriteUtc(LabelsPath);
+                return list;
+            }
+
+            if (f.Labels != null)
+                for (int i = 0; i < LabelCount && i < f.Labels.Count; i++)
+                    list[i] = ClipLabel(f.Labels[i]);
+            if (f.Order != null && f.Order.Count > 0)
+                LabelOrder = NormalizeOrder(f.Order);
+            _labelsMtime = LastWriteUtc(LabelsPath);
             return list;
+        }
+
+        /// <summary>共享读：允许别人同时持有写句柄；失败就短退避重试几次，最后还是不行返回 null。</summary>
+        private static byte[] ReadSharedBytes(string path)
+        {
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    using (var ms = new MemoryStream())
+                    {
+                        fs.CopyTo(ms);
+                        return ms.ToArray();
+                    }
+                }
+                catch (IOException) { System.Threading.Thread.Sleep(80 + attempt * 60); }
+                catch (UnauthorizedAccessException) { System.Threading.Thread.Sleep(80 + attempt * 60); }
+            }
+            return null;
         }
 
         // ---------------- chip 顺序（v2816） ----------------
