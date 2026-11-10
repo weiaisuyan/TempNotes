@@ -80,6 +80,9 @@ namespace TempNotes2
         /// <summary>窗口背景色跟随配色。</summary>
         public Action<string> OnSetBackground;
 
+        /// <summary>主色（accent）跟随配色，标题栏图钉用它做按压/置顶底色。</summary>
+        public Action<string> OnSetAccent;
+
         public Bridge(Store store, Action<string> eval, Action<string> log)
         {
             _store = store;
@@ -397,6 +400,11 @@ namespace TempNotes2
                     case "__setbg":
                         // 前端切配色时同步窗口背景（否则窗口边框区域还是旧色）
                         if (p.Length > 1 && OnSetBackground != null) OnSetBackground(p[1]);
+                        break;
+
+                    case "__setaccent":
+                        // 前端切配色时同步主色（标题栏图钉的悬浮/按压/置顶底色）
+                        if (p.Length > 1 && OnSetAccent != null) OnSetAccent(p[1]);
                         break;
 
                     case "dbg":

@@ -23,6 +23,8 @@ namespace TempNotes2
         private HwndSource _hwndSource;
         private const int HOTKEY_ID = 0xB001;
         private bool _allowClose;
+        /// <summary>正在由代码同步图钉选中态，避免 Checked/Unchecked 回调再翻一次。</summary>
+        private bool _pinSyncing;
         private System.Windows.Threading.DispatcherTimer _hideToTrayTimer;
         private DateTime _trayIgnoreClickUntil = DateTime.MinValue;
 
@@ -495,6 +497,75 @@ namespace TempNotes2
         private void BtnTrash_Click(object sender, RoutedEventArgs e) { Eval("window.api.openTrash && window.api.openTrash();"); }
         private void BtnSettings_Click(object sender, RoutedEventArgs e) { Eval("window.api.openSettings && window.api.openSettings();"); }
 
+        /// <summary>标题栏「窗口置顶」：由 ToggleButton 的选中态驱动 Topmost，
+        /// 点击、键盘、自动化（UIA TogglePattern）走的都是这一条路，不会双重翻转。</summary>
+        private void BtnPin_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_pinSyncing) return;
+            bool on = BtnPin.IsChecked == true;
+            ApplyTopmost(on);
+        }
+
+        /// <summary>把置顶状态同步到窗口、settings.json 与图钉外观。</summary>
+        private void ApplyTopmost(bool on)
+        {
+            Topmost = on;
+            try { if (_store != null && _store.Settings != null) { _store.Settings.Topmost = on; _store.SaveSettings(); } } catch { }
+            UpdatePinState(on);
+        }
+
+        /// <summary>同步图钉的选中态与提示（底色/图标/缩放全在 XAML 的 PinBtn 模板里由触发器负责）。</summary>
+        private void UpdatePinState(bool on)
+        {
+            try
+            {
+                if (BtnPin != null)
+                {
+                    _pinSyncing = true;
+                    try { BtnPin.IsChecked = on; }
+                    finally { _pinSyncing = false; }
+                    BtnPin.ToolTip = on ? "取消置顶" : "窗口置顶";
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>把当前配色的主色应用到标题栏图钉（16 套配色切换时调用），
+        /// 色值与网页端 .note .pin 的 color-mix 比例对齐：16/20/30/44%。</summary>
+        private void ApplyPinAccent(string accentHex)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(accentHex)) return;
+                System.Windows.Media.Color c;
+                try { c = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(accentHex); }
+                catch { return; }
+                Action<string, byte> set = (key, a) =>
+                {
+                    var b = TryFindResource(key) as System.Windows.Media.SolidColorBrush;
+                    if (b == null) return;
+                    if (b.IsFrozen) { b = b.Clone(); Resources[key] = b; }
+                    b.Color = System.Windows.Media.Color.FromArgb(a, c.R, c.G, c.B);
+                };
+                set("PinOnBrush", 0x29);        // 16%
+                set("PinHoverBrush", 0x33);     // 20%
+                set("PinOnHoverBrush", 0x4D);   // 30%
+                set("PinPressBrush", 0x70);     // 44%
+                set("PinIconOnBrush", 0xFF);
+                // 已置顶悬浮的图标提亮：86% 主色 + 14% 白
+                var hi = TryFindResource("PinIconOnHoverBrush") as System.Windows.Media.SolidColorBrush;
+                if (hi != null)
+                {
+                    if (hi.IsFrozen) { hi = hi.Clone(); Resources["PinIconOnHoverBrush"] = hi; }
+                    hi.Color = System.Windows.Media.Color.FromRgb(
+                        (byte)(c.R * 0.86 + 255 * 0.14),
+                        (byte)(c.G * 0.86 + 255 * 0.14),
+                        (byte)(c.B * 0.86 + 255 * 0.14));
+                }
+            }
+            catch { }
+        }
+
         /// <summary>标题栏「语法速查」：用系统默认浏览器打开本地的 md-guide.html。</summary>
         private void BtnGuide_Click(object sender, RoutedEventArgs e)
         {
@@ -863,9 +934,7 @@ namespace TempNotes2
                 };
                 _bridge.OnTopmost = on =>
                 {
-                    Topmost = on;
-                    _store.Settings.Topmost = on;
-                    _store.SaveSettings();
+                    ApplyTopmost(on);
                 };
                 _bridge.OnAutoStart = on =>
                 {
@@ -885,6 +954,10 @@ namespace TempNotes2
                     }
                     catch { }
                 };
+                _bridge.OnSetAccent = accent =>
+                {
+                    ApplyPinAccent(accent);
+                };
 
                 cw.WebMessageReceived += (s2, e2) =>
                 {
@@ -897,6 +970,7 @@ namespace TempNotes2
 
                 InitHotkeyAndTray(log);
                 if (_store.Settings.Topmost) Topmost = true;
+                UpdatePinState(_store.Settings.Topmost);
 
                 cw.NavigationCompleted += async (s4, e4) =>
                 {

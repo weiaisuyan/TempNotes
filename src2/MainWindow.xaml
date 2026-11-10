@@ -16,6 +16,106 @@
     </shell:WindowChrome.WindowChrome>
 
     <Window.Resources>
+        <!-- 标题栏图钉按钮的四种底色，全部由当前配色的 accent 推导（C# ApplyAccent 重设 Color）。
+             对齐网页端「待办卡片置顶角标」(.note .pin) 的交互手感：
+             常驻(on)=accent 16%、悬浮=accent 20%(off)/30%(on)、按下=accent 44% + 缩到 0.9。
+             alpha：0x29=16%、0x33=20%、0x4D=30%、0x70=44%。默认 accent 取 palette 9 深墨绿。 -->
+        <SolidColorBrush x:Key="PinOnBrush" Color="#294FBF95"/>
+        <SolidColorBrush x:Key="PinHoverBrush" Color="#334FBF95"/>
+        <SolidColorBrush x:Key="PinOnHoverBrush" Color="#4D4FBF95"/>
+        <SolidColorBrush x:Key="PinPressBrush" Color="#704FBF95"/>
+        <!-- 图钉图标本身的三档描边色：未置顶=灰、已置顶=主色、已置顶悬浮=主色提亮 -->
+        <SolidColorBrush x:Key="PinIconOffBrush" Color="#AFC0B8"/>
+        <SolidColorBrush x:Key="PinIconOnBrush" Color="#4FBF95"/>
+        <SolidColorBrush x:Key="PinIconOnHoverBrush" Color="#6BCFA8"/>
+
+        <!-- 标题栏图钉（ToggleButton）：交互照抄网页端待办角标 .note .pin
+             —— 常驻淡主色、悬浮加深、按下 44% 主色且缩到 0.9。 -->
+        <Style x:Key="PinBtn" TargetType="ToggleButton">
+            <Setter Property="Width" Value="22"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="b" Background="Transparent" CornerRadius="7">
+                            <Path x:Name="ic" Width="13" Height="13"
+                                  Stroke="{DynamicResource PinIconOffBrush}" StrokeThickness="1.4"
+                                  StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Fill="Transparent" Stretch="Uniform"
+                                  RenderTransformOrigin="0.5,0.5"
+                                  Data="M5.2,3 H10.8 M6.4,3 V6.6 M9.6,3 V6.6 M4.8,9.6 L6.4,6.6 M9.6,6.6 L11.2,9.6 M4.8,9.6 H11.2 M8,9.6 V13.8">
+                                <Path.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform x:Name="sc" ScaleX="1" ScaleY="1"/>
+                                        <TranslateTransform X="0" Y="1.5"/>
+                                    </TransformGroup>
+                                </Path.RenderTransform>
+                            </Path>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <!-- 未置顶悬浮：主色 20% -->
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="{DynamicResource PinHoverBrush}"/>
+                                <Setter TargetName="ic" Property="Stroke" Value="{DynamicResource PinIconOnBrush}"/>
+                            </Trigger>
+                            <!-- 已置顶：常驻主色 16% + 图标主色加粗 -->
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="{DynamicResource PinOnBrush}"/>
+                                <Setter TargetName="ic" Property="Stroke" Value="{DynamicResource PinIconOnBrush}"/>
+                                <Setter TargetName="ic" Property="StrokeThickness" Value="1.9"/>
+                            </Trigger>
+                            <!-- 已置顶 + 悬浮：主色 30% + 图标提亮 -->
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsChecked" Value="True"/>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="b" Property="Background" Value="{DynamicResource PinOnHoverBrush}"/>
+                                <Setter TargetName="ic" Property="Stroke" Value="{DynamicResource PinIconOnHoverBrush}"/>
+                            </MultiTrigger>
+                            <!-- 按下：主色 44% + 缩到 0.9（松开弹回），和网页角标一致 -->
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="{DynamicResource PinPressBrush}"/>
+                                <Setter TargetName="ic" Property="StrokeThickness" Value="1.9"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX"
+                                                             To="0.9" Duration="0:0:0.06"/>
+                                            <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY"
+                                                             To="0.9" Duration="0:0:0.06"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX"
+                                                             To="1" Duration="0:0:0.14">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <BackEase Amplitude="0.4" EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                            <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY"
+                                                             To="1" Duration="0:0:0.14">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <BackEase Amplitude="0.4" EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- 标题栏功能按钮 -->
         <Style x:Key="TBtn" TargetType="Button">
             <Setter Property="Width" Value="30"/>
@@ -132,12 +232,18 @@
                             VerticalAlignment="Center" Margin="0,0,4,0">
                     <!-- 批量编辑挪到左侧；回收站挪进设置面板 -->
                     <Button x:Name="BtnGuide" Style="{StaticResource TBtn}" ToolTip="Markdown 语法速查"
-                            Width="22" Height="22" VerticalContentAlignment="Center" Margin="0,0,16,0"
+                            Width="22" Height="22" VerticalContentAlignment="Center" Margin="0,0,8,0"
                             shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="BtnGuide_Click">
                         <Path Style="{StaticResource IconPath}" Width="13" Height="13"
                               RenderTransform="1,0,0,1,0,1.5"
                               Data="M4.3,2.7 H9.9 L12.3,5.1 V13.3 H4.3 Z M9.9,2.7 V5.1 H12.3 M6.2,7.7 H10.4 M6.2,9.9 H10.4"/>
                     </Button>
+
+                    <!-- 窗口置顶：图钉按钮，点击在「始终置顶 / 普通」间切换（原设置面板 #swTop 提到这里、放在设置图标左边） -->
+                    <ToggleButton x:Name="BtnPin" Style="{StaticResource PinBtn}" ToolTip="窗口置顶"
+                                  Margin="0,0,8,0" VerticalContentAlignment="Center"
+                                  shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                                  Checked="BtnPin_Changed" Unchecked="BtnPin_Changed"/>
 
                     <Button x:Name="BtnSettings" Style="{StaticResource TBtn}" ToolTip="设置"
                             Width="22" Height="22" VerticalContentAlignment="Center"

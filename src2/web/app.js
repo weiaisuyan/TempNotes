@@ -1309,6 +1309,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     st.setProperty("--muted", p.muted);
     st.setProperty("--accent", p.accent);
     send("__setbg|" + p.bg);
+    send("__setaccent|" + p.accent);
   }
   function renderPalettes() {
     var host = document.getElementById("palettes");
@@ -2152,6 +2153,12 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
           // 指针松在另一个区里 = 这次拖放不成立，卡片要回到原来的位置。
           // 必须在清 _dragZoneEl 之前判断。
           var outZone = pointerOutOfZone(_dragZoneEl);
+          // 跨区落点方向：目标区在本区上方 → 落到本区开头；在下方 → 落到本区末尾。
+          // 拖动过程中占位预览就停在「本区里贴着目标区的那一端」，落点必须跟它一致。
+          var outToTop = false;
+          if (outZone && _dragZoneEl) {
+            try { outToTop = pointerY() < _dragZoneEl.getBoundingClientRect().top; } catch (e0) { }
+          }
           _sortDragging = false; document.body.classList.remove("sorting");
           _dragInst = null;
           updateTopButton();
@@ -2195,11 +2202,18 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
           // 以前这里是交给自己那个 Sortable 实例算落点（会先跑到本区最后一个），
           // 看起来就是「一闪就回去了 / 根本没动画」。
           if (outZone) {
-            // 2026-11-09 用户明确要求：跨区拖不动时**不要回原位**，而是落到「本区最后一个位置」——
-            // 拖动过程中本区其他卡片已经给它让出了这个位置。
-            // （以前是 restoreHomeOrder 按按下时快照回原位，用户不喜欢这个行为。）
+            // 跨区拖不动时**不要回原位**，而是落到「本区里与目标区相邻的那一端」——
+            // 也就是拖动过程中占位预览 / 指示线所在的位置（用户 2026-11-10 定案）。
+            //   目标区在本区下方（置顶→未完成、未完成→已完成）→ 本区末尾
+            //   目标区在本区上方（已完成→未完成、未完成→置顶）→ 本区开头
             try {
-              if (_dragHomeParent && item) _dragHomeParent.appendChild(item);
+              if (_dragHomeParent && item) {
+                if (outToTop && _dragHomeParent.firstChild) {
+                  _dragHomeParent.insertBefore(item, _dragHomeParent.firstChild);
+                } else {
+                  _dragHomeParent.appendChild(item);
+                }
+              }
             } catch (e7) { }
             _dragHomeParent = null;
             _dragHomeNext = null;
@@ -2622,11 +2636,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     if (!confirm("清空回收站里的全部内容？此操作不可恢复。")) return;
     send("empttrash");
   });
-  on("swTop", function () {
-    settings.topmost = !settings.topmost;
-    document.getElementById("swTop").classList.toggle("on", settings.topmost);
-    send("topmost|" + (settings.topmost ? 1 : 0));
-  });
+  // 窗口置顶设置已移到标题栏图钉按钮（C# 侧处理），设置面板不再有开关
   on("swAuto", function () {
     settings.autoStart = !settings.autoStart;
     document.getElementById("swAuto").classList.toggle("on", settings.autoStart);
