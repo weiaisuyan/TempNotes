@@ -31,8 +31,16 @@ namespace TempNotes2
         private const int WS_CAPTION = 0x00C00000;
         private static readonly uint WM_SHOW_INSTANCE = RegisterWindowMessage("TempNotes2_ShowInstance");
 
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
         public MainWindow()
         {
+            // 固定任务栏身份：不设的话 Windows 按 exe 路径归组，换一次 exe / 换一次目录
+            // 任务栏就当成「另一个程序」，旧固定项失效、旁边再冒一个新图标。
+            // 设成一个固定 AUMID 后，只要快捷方式指向同一个 AUMID，重编多少次都归到同一个按钮。
+            try { SetCurrentProcessExplicitAppUserModelID("Suiji.TempNotes.Desktop"); } catch { }
+
             // 单实例：已有一个在跑就直接退出（第二个实例只负责把第一个唤起来）
             bool created;
             _mutex = new System.Threading.Mutex(true, "TempNotes2_SingleInstance", out created);
@@ -750,7 +758,7 @@ namespace TempNotes2
                 LogMsg = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2762 双机合并 / 拖动不点亮任何卡片 / 标题栏图标微调 / 可访问性开启");
+                log("版本 2790 正文预览展开 / 表格换行与右缘对齐 / 程序名改为随记");
             _store = new Store();
                 _store.Load();
                 log("Store 载入，笔记 " + _store.Db.Notes.Count + " 条，根目录 " + _store.Root);
@@ -1026,6 +1034,19 @@ namespace TempNotes2
 
         private static System.Drawing.Icon MakeTrayIcon()
         {
+            // 托盘图标直接用 app.ico（和标题栏、任务栏同一个），
+            // 以前是临时画的「绿圆+白勾」，和程序图标不是一套，看着像两个软件（用户 2026-11-10 反馈）。
+            try
+            {
+                string ico = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+                if (System.IO.File.Exists(ico))
+                {
+                    using (var f = new System.Drawing.Icon(ico, 32, 32))
+                        return (System.Drawing.Icon)f.Clone();
+                }
+            }
+            catch { }
+
             var bmp = new System.Drawing.Bitmap(32, 32);
             using (var g = System.Drawing.Graphics.FromImage(bmp))
             {

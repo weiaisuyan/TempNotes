@@ -214,7 +214,7 @@
     <a href="#how">怎么用</a>
     <a href="#basic">基础强调</a>
     <a href="#head">标题</a>
-    <a href="#list">列表</a>
+    <a href="#list">列表 / 表格</a>
     <a href="#task">勾选框</a>
     <a href="#code">代码</a>
     <a href="#quote">引用 / 分隔</a>
@@ -314,7 +314,7 @@
     </section>
 
     <section id="list">
-      <div class="shead"><span class="n">04</span><h2>列表</h2><span class="hint">- 或 数字. 开头</span></div>
+      <div class="shead"><span class="n">04</span><h2>列表与表格</h2><span class="hint">- 或 数字. 开头；表格用竖线</span></div>
       <div class="grid row2">
         <div class="item">
           <div class="name"><code>- 项目</code><span class="why">* 和 + 也行</span></div>
@@ -329,7 +329,7 @@
           </div>
         </div>
         <div class="item">
-          <div class="name"><code>1. 步骤</code><span class="why">数字后面跟 . 或 )</span></div>
+          <div class="name"><code>1. 步骤</code><span class="why">缩进 2 空格 = 子项</span></div>
           <button class="cp" data-c="1. 先备份
 2. 再改配置
 3. 最后重启">复制</button>
@@ -339,6 +339,32 @@
           <div class="demo"><div class="lbl">效果</div>
             <ol><li>先备份</li><li>再改配置</li><li>最后重启</li></ol>
           </div>
+        </div>
+
+        <div class="item" style="grid-column:1/-1">
+          <div class="name"><code>| 表格 |</code><span class="why">第二行是分隔行，冒号控制对齐</span></div>
+          <button class="cp" data-c="| 项目 | 状态 | 备注 |
+| --- | :--: | ---: |
+| 报表 | 完成 | 已交 |
+| 对账 | 进行中 | 周四前 |">复制</button>
+          <pre class="src">| 项目 | 状态 | 备注 |
+| --- | :--: | ---: |
+| 报表 | 完成 | 已交 |
+| 对账 | 进行中 | 周四前 |</pre>
+          <div class="demo"><div class="lbl">效果</div>
+            <table style="border-collapse:collapse;font-size:.93em">
+              <thead><tr>
+                <th style="border:1px solid var(--line2);padding:.32em .6em;background:rgba(255,255,255,.06)">项目</th>
+                <th style="border:1px solid var(--line2);padding:.32em .6em;background:rgba(255,255,255,.06)">状态</th>
+                <th style="border:1px solid var(--line2);padding:.32em .6em;background:rgba(255,255,255,.06)">备注</th>
+              </tr></thead>
+              <tbody>
+                <tr><td style="border:1px solid var(--line2);padding:.32em .6em">报表</td><td style="border:1px solid var(--line2);padding:.32em .6em;text-align:center">完成</td><td style="border:1px solid var(--line2);padding:.32em .6em;text-align:right">已交</td></tr>
+                <tr><td style="border:1px solid var(--line2);padding:.32em .6em">对账</td><td style="border:1px solid var(--line2);padding:.32em .6em;text-align:center">进行中</td><td style="border:1px solid var(--line2);padding:.32em .6em;text-align:right">周四前</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p style="margin-top:10px;font-size:13px;color:var(--muted)">分隔行里用 <code style="font:400 12px var(--mono)">:--</code> 左对齐、<code style="font:400 12px var(--mono)">:--:</code> 居中、<code style="font:400 12px var(--mono)">--:</code> 右对齐。表格太宽会在卡片里横向滚动，不会把卡片撑破。</p>
         </div>
       </div>
     </section>
@@ -487,10 +513,6 @@ if (a &lt; 2) run();</div>
     <section id="limit">
       <div class="shead"><span class="n">10</span><h2>暂不支持的写法</h2><span class="hint">这些会当普通文字显示</span></div>
       <div class="grid row2">
-        <div class="item">
-          <div class="name"><code>表格</code><span class="why">暂不解析</span></div>
-          <p style="font-size:13.5px;color:var(--muted)">竖线表格会原样显示成一行文字。需要对齐的内容建议改用列表。</p>
-        </div>
         <div class="item">
           <div class="name"><code>图片 {}</code><span class="why">用拖入附件代替</span></div>
           <p style="font-size:13.5px;color:var(--muted)">正文里的图片语法不会被渲染。想看图，直接把图片文件拖到卡片上 —— 附件区比内联图片更好管理。</p>

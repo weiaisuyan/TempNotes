@@ -175,7 +175,7 @@ namespace TempNotes2
                     case "add":
                         // add|<urlencoded 文本> —— 用 encodeURIComponent，文本里的 | 与换行都能过
                         _store.AddNote(p.Length > 1 ? Uri.UnescapeDataString(p[1]) : "", "");
-                        _store.Save();
+                        _store.SaveAfterPrune();      // 空文本不该留下空卡片
                         PushAll();
                         break;
 
@@ -217,7 +217,7 @@ namespace TempNotes2
                                 // 刚取消完成的回到待办区最上面（用户 2026-11-09 明确要求）。
                                 if (toTodo) SortToTop(n, false);
                                 else SortToTopDone(n);
-                                _store.Save();
+                                _store.SaveAfterPrune();   // 空卡片切完成会留下幽灵，一并清掉
                                 PushAll();
                             }
                         }
@@ -370,7 +370,7 @@ namespace TempNotes2
                                 n.Pinned = !n.Pinned;
                                 SortToTop(n, n.Pinned);   // 置顶 → 置顶区第一位；取消 → 待办区第一位
                                 _store.Touch(n);
-                                _store.Save();
+                                _store.SaveAfterPrune();
                                 PushAll();
                             }
                         }
@@ -1727,7 +1727,9 @@ namespace TempNotes2
                 if (!string.IsNullOrWhiteSpace(n.Text)) return;   // 还有文字
                 if (n.Attachments != null && n.Attachments.Count > 0) return;  // 还有附件
                 _store.Db.Notes.Remove(n);
-                _store.Save();
+                // 必须跳过合并：Save() 会先 MergeFromDisk，磁盘上这条还在 → 按 id 加回来，删了等于没删。
+                // （这也是以前「空卡片明明该删却一直在」的直接原因。）
+                _store.Save(true);
                 _log("空待办自动移除 " + noteId);
                 PushAll();
             }

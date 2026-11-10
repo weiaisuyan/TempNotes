@@ -241,9 +241,11 @@ namespace TempNotes
                 // 旧档没有 sort 字段：用创建时间补，顺序与旧版按 CreatedAt 排完全一致
                 if (n.Sort == 0) n.Sort = n.CreatedAt;
             }
+            int prunedOnLoad = PruneEmptyNotes();     // 启动即清掉历史遗留的空卡片
             _loadedRev = Db.Rev;
             try { _loadedWriteUtc = File.Exists(DbPath) ? File.GetLastWriteTimeUtc(DbPath) : DateTime.MinValue; }
             catch { _loadedWriteUtc = DateTime.MinValue; }
+            if (prunedOnLoad > 0) Save(true);
         }
 
         private static T LoadJson<T>(string path, DataContractJsonSerializer ser) where T : class
@@ -263,8 +265,17 @@ namespace TempNotes
 
         public void Save()
         {
+            Save(false);
+        }
+
+        /// <summary>
+        /// skipMerge=true 时不先做磁盘合并 —— 只有「删除类」操作才这么用：
+        /// 合并会把「内存里已经删掉、但磁盘上还在」的条目按 id 加回来，删除等于白删。
+        /// </summary>
+        public void Save(bool skipMerge)
+        {
             // 写之前先看磁盘是不是被另一台机器改过 —— 直接覆盖会把它那边的改动整份吃掉。
-            if (!_saving)
+            if (!skipMerge && !_saving)
             {
                 _saving = true;
                 try { MergeFromDisk(); } catch { } finally { _saving = false; }
@@ -274,6 +285,39 @@ namespace TempNotes
             _loadedRev = Db.Rev;
             try { _loadedWriteUtc = File.Exists(DbPath) ? File.GetLastWriteTimeUtc(DbPath) : DateTime.MinValue; }
             catch { _loadedWriteUtc = DateTime.MinValue; }
+        }
+
+        /// <summary>
+        /// 删掉「既没有文字、也没有附件」的笔记。回收站（status=2）里的不动。
+        /// 只改内存，返回删了几条；要不要落盘由调用方决定。
+        /// 这个清理以前只在「编辑清空 / 删掉最后一个附件」时跑，所以 add、切完成、置顶
+        /// 这几条路径能留下永久空卡片（用户 2026-11-09 发现置顶区有一条空的）。
+        /// </summary>
+        public int PruneEmptyNotes()
+        {
+            int removed = 0;
+            try
+            {
+                for (int i = Db.Notes.Count - 1; i >= 0; i--)
+                {
+                    var n = Db.Notes[i];
+                    if (n == null) { Db.Notes.RemoveAt(i); removed++; continue; }
+                    if (n.Status == 2) continue;                                  // 回收站保留
+                    if (!string.IsNullOrWhiteSpace(n.Text)) continue;              // 有文字
+                    if (n.Attachments != null && n.Attachments.Count > 0) continue; // 有附件
+                    Db.Notes.RemoveAt(i);
+                    removed++;
+                }
+            }
+            catch { }
+            return removed;
+        }
+
+        /// <summary>先清空笔记再落盘：删掉了就跳过合并（否则会被磁盘份合并回来）。</summary>
+        public void SaveAfterPrune()
+        {
+            int n = PruneEmptyNotes();
+            Save(n > 0);
         }
 
         /// <summary>

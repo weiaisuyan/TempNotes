@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-09-2785";
+var APPJS_VER = "2026-11-09-2794";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -184,6 +184,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
         .replace(/(^|[^_])_([^_\n]+)_/g, "$1<i>$2</i>")
         .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
+        .replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g,
+          '<a class="md-a" data-href="$1" title="$1">$1</a>')
         .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
           '<a class="md-a" data-href="$2" title="$2">$1</a>');
     }
@@ -202,55 +204,137 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       out.push("<p>" + buf.join("<br>") + "</p>");
       buf = [];
     }
+    function ensureList(tag, task, nested) {
+      if (nested && list) { list.nest = true; return; }
+      if (!list || list.tag !== tag || list.task !== task) {
+        closeList();
+        list = { tag: tag, task: task, items: [], nest: false };
+      } else list.nest = false;
+    }
+    function pushLi(html) {
+      if (!list) return false;
+      if (list.nest && list.items.length) {
+        // 缩进 2 空格以上的项挂进上一个 <li>，只支持一层（再深也只当同一层）
+        var prev = list.items[list.items.length - 1];
+        if (/<\/ul><\/li>$/.test(prev)) {
+          // 上一条已经带嵌套列表 → 继续往那个 <ul> 里追加，别开第二个
+          list.items[list.items.length - 1] = prev.replace(/<\/ul><\/li>$/, html + "</ul></li>");
+        } else {
+          list.items[list.items.length - 1] =
+            prev.replace(/<\/li>$/, '<ul class="md-list">' + html + "</ul></li>");
+        }
+        return true;
+      }
+      list.items.push(html);
+      return true;
+    }
+
+    /* ---- GFM 表格 ---- */
+    function isSepRow(row) {
+      var t = String(row).trim();
+      if (t.indexOf("-") < 0) return false;
+      return /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(t);
+    }
+    function rowCells(row) {
+      var t = String(row).trim();
+      if (t.charAt(0) === "|") t = t.slice(1);
+      if (t.charAt(t.length - 1) === "|") t = t.slice(0, -1);
+      return t.split("|").map(function (c) { return c.trim(); });
+    }
+    function alignOf(c) {
+      var l = c.charAt(0) === ":", r = c.charAt(c.length - 1) === ":";
+      return l && r ? "center" : r ? "right" : l ? "left" : "";
+    }
+    function tableHtml(headRow, sepRow, bodyRows) {
+      var hs = rowCells(headRow), al = rowCells(sepRow).map(alignOf);
+      var h = "<thead><tr>";
+      for (var q = 0; q < hs.length; q++) {
+        h += "<th" + (al[q] ? ' style="text-align:' + al[q] + '"' : "") + ">" +
+          inline(hs[q]) + "</th>";
+      }
+      h += "</tr></thead><tbody>";
+      for (var r = 0; r < bodyRows.length; r++) {
+        var cs = rowCells(bodyRows[r]);
+        h += "<tr>";
+        for (var c2 = 0; c2 < hs.length; c2++) {
+          h += "<td" + (al[c2] ? ' style="text-align:' + al[c2] + '"' : "") + ">" +
+            inline(cs[c2] || "") + "</td>";
+        }
+        h += "</tr>";
+      }
+      return '<div class="md-tblwrap"><table class="md-tbl">' + h + "</tbody></table></div>";
+    }
 
     for (var i = 0; i < lines.length; i++) {
-      var ln = lines[i].replace(/\s+$/, "");
-      if (!ln.trim()) { flushPara(); closeList(); continue; }
+      var raw = lines[i].replace(/\s+$/, "");
+      if (!raw.trim()) { flushPara(); closeList(); continue; }
 
       // 单独占一行的代码块占位符：必须当块级元素直接输出。
       // 塞进 <p> 里的话浏览器会自动闭合 <p>，留下一个空段落带 margin，块之间凭空多一条空隙。
-      var mph = /^\u0000(\d+)\u0000$/.exec(ln.trim());
+      var mph = /^\u0000(\d+)\u0000$/.exec(raw.trim());
       if (mph) { flushPara(); closeList(); out.push(stash[+mph[1]] || ""); continue; }
 
-      var mh = /^(#{1,6})\s+(.*)$/.exec(ln);
-      if (mh) {
+      // 缩进（2 空格 = 嵌套一层）
+      var ind = raw.match(/^\s*/)[0].replace(/\t/g, "  ").length;
+      var ln = ind ? raw.replace(/^\s+/, "") : raw;
+      var nested = ind >= 2;
+
+      // 表格：当前行含 |，下一行是分隔行
+      if (ln.indexOf("|") >= 0 && i + 1 < lines.length && isSepRow(lines[i + 1])) {
         flushPara(); closeList();
-        var lv = mh[1].length;
-        out.push("<h" + lv + ' class="md-h">' + inline(mh[2]) + "</h" + lv + ">");
+        var tbody = [], tj = i + 2;
+        while (tj < lines.length) {
+          var nl = lines[tj];
+          if (!nl.trim() || nl.indexOf("|") < 0) break;
+          tbody.push(nl); tj++;
+        }
+        out.push(tableHtml(ln, lines[i + 1], tbody));
+        i = tj - 1;
         continue;
       }
-      if (/^(-{3,}|\*{3,}|_{3,})$/.test(ln.trim())) {
-        flushPara(); closeList();
-        out.push('<hr class="md-hr">');
-        continue;
+
+      if (!nested) {
+        var mh = /^(#{1,6})\s+(.*?)\s*#*$/.exec(ln);
+        if (mh) {
+          flushPara(); closeList();
+          var lv = mh[1].length;
+          out.push("<h" + lv + ' class="md-h">' + inline(mh[2]) + "</h" + lv + ">");
+          continue;
+        }
+        if (/^(-{3,}|\*{3,}|_{3,})$/.test(ln.trim())) {
+          flushPara(); closeList();
+          out.push('<hr class="md-hr">');
+          continue;
+        }
+        var mq = /^&gt;\s?(.*)$/.exec(ln);
+        if (mq) {
+          flushPara(); closeList();
+          out.push('<blockquote class="md-q">' + inline(mq[1]) + "</blockquote>");
+          continue;
+        }
       }
-      var mq = /^&gt;\s?(.*)$/.exec(ln);
-      if (mq) {
-        flushPara(); closeList();
-        out.push('<blockquote class="md-q">' + inline(mq[1]) + "</blockquote>");
-        continue;
-      }
+
       var mt = /^[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(ln);
       if (mt) {
         flushPara();
-        if (!list || !list.task) { closeList(); list = { tag: "ul", task: true, items: [] }; }
+        ensureList("ul", true, nested && list && list.task);
         var done = mt[1] !== " ";
-        list.items.push('<li class="md-task' + (done ? " done" : "") + '">' +
+        pushLi('<li class="md-task' + (done ? " done" : "") + '">' +
           '<i class="md-box">' + (done ? "✓" : "") + "</i><span>" + inline(mt[2]) + "</span></li>");
         continue;
       }
       var mu = /^[-*+]\s+(.*)$/.exec(ln);
       if (mu) {
         flushPara();
-        if (!list || list.task || list.tag !== "ul") { closeList(); list = { tag: "ul", task: false, items: [] }; }
-        list.items.push("<li>" + inline(mu[1]) + "</li>");
+        ensureList("ul", false, nested && list && !list.task);
+        pushLi("<li>" + inline(mu[1]) + "</li>");
         continue;
       }
       var mo = /^(\d+)[.)]\s+(.*)$/.exec(ln);
       if (mo) {
         flushPara();
-        if (!list || list.tag !== "ol") { closeList(); list = { tag: "ol", task: false, items: [] }; }
-        list.items.push("<li>" + inline(mo[2]) + "</li>");
+        ensureList("ol", false, nested && list && list.tag === "ol");
+        pushLi("<li>" + inline(mo[2]) + "</li>");
         continue;
       }
       closeList();
@@ -1585,6 +1669,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
                  '<div class="foot">' +
                    '<span class="upd">' + fmtStamp(n.updated) + '</span>' +
                    '<div class="acts"><span class="made">建 ' + fmtStamp(n.created) + '</span>' +
+                   '<span class="exp" data-act="expand" style="display:none">预览</span>' +
                    '<span data-act="edit">编辑</span>' +
                    '<span class="del" data-act="delete">删除</span></div>' +
                  '</div>' +
@@ -1680,6 +1765,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     }
     _flipPrev = null;
     syncScrollbarGutter();
+    syncAllExpand();
   }
 
   /* 滚动条宽度补偿：窗口宽度固定时，滚动条一出现就会把卡片挤窄 6px。
@@ -1883,6 +1969,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
           else if (act === "check") { toggleBatchSel(id); }
           else if (act === "color") { openColorPop(e, id); }
           else if (act === "pin") { if (!batchMode) send("pin|" + id); }
+          else if (act === "expand") { toggleExpand(card, id); }
         });
       });
 
@@ -2192,6 +2279,39 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
 
 
 
+  /* ---------- 预览 / 收起：正文超过 15 行时给一个折叠开关 ----------
+     展开状态存在 _expanded 里，卡片重渲染（改颜色、切完成、拖拽排序）后不会自己收回去。 */
+  var _expanded = {};
+
+  function textOverflows(el) {
+    if (!el) return false;
+    return el.scrollHeight > el.clientHeight + 1;
+  }
+
+  function syncExpand(card) {
+    if (!card) return;
+    var id = card.getAttribute("data-id");
+    var textEl = card.querySelector("[data-act='text']");
+    var btn = card.querySelector("[data-act='expand']");
+    if (!textEl || !btn) return;
+    var open = !!_expanded[id];
+    textEl.classList.toggle("open", open);
+    var over = open ? true : textOverflows(textEl);
+    btn.style.display = over ? "" : "none";
+    btn.textContent = open ? "收起" : "预览";
+  }
+
+  function toggleExpand(card, id) {
+    if (!card) return;
+    if (_expanded[id]) delete _expanded[id]; else _expanded[id] = 1;
+    syncExpand(card);
+  }
+
+  function syncAllExpand() {
+    if (!listEl) return;
+    listEl.querySelectorAll(".note").forEach(function (c) { syncExpand(c); });
+  }
+
   /* ---------- 编辑 ---------- */
   function startEdit(id) {
     var card = listEl.querySelector('.note[data-id="' + id + '"]');
@@ -2482,8 +2602,9 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   document.addEventListener("mousedown", function (e) {
     var t = e.target;
     if (!t || !t.closest) return;
+    // 置顶角标也是按钮：按它绝不能整卡下压 —— 那看起来像「这条开始被拖了」（用户 2026-11-10 反馈）
     if (t.closest(".att") || t.closest(".ring") || t.closest(".acts") ||
-        t.closest(".chk") || t.closest("[contenteditable='true']")) return;
+        t.closest(".chk") || t.closest(".pin") || t.closest("[contenteditable='true']")) return;
     var n = t.closest(".note");
     if (n) n.classList.add("pressing");
   }, true);

@@ -480,8 +480,41 @@ body.batch .ring{opacity:0;visibility:hidden;pointer-events:none;transform:scale
 .text.md .md-a{color:var(--accent);text-decoration:none;cursor:pointer;
   border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
 .text.md .md-a:hover{border-bottom-color:var(--accent)}
+/* 预览 / 收起：展开时解除 15 行折叠 */
+.text.md.open{max-height:none}
+.text.open{display:block;-webkit-line-clamp:unset;overflow:visible}
+
 .text.md b{font-weight:650}
 .text.md del{opacity:.58}
+
+/* 表格：横向可滚，不把卡片撑破 */
+/* .note .text 有 padding-right:22px（给悬浮的编辑/删除按钮让位），
+   表格沿用它就会比卡片右侧多缩 22px、看着很空。这里用负右外边距抵掉，
+   让表格右缘和正文对齐（距卡片内缘约 14px，与普通文字一致）。
+   注意不要再写 width:100% —— 100% 是 padding-box 内宽，会把这 22px 又扣回去。 */
+.text.md .md-tblwrap{margin:.36em -22px .36em 0;max-width:none;overflow-x:auto;
+  border-radius:8px;border:1px solid color-mix(in srgb,var(--line) 78%,transparent)}
+/* 表格不要横向撑满：宽度按内容分配，单元格文字**自动换行**，
+   否则一个长单元格就把整张表拉得很宽、右边留一大片空。 */
+.text.md .md-tbl{border-collapse:collapse;font-size:.92em;width:100%;table-layout:auto}
+.text.md .md-tbl th,.text.md .md-tbl td{
+  border-right:1px solid color-mix(in srgb,var(--line) 70%,transparent);
+  border-bottom:1px solid color-mix(in srgb,var(--line) 70%,transparent);
+  padding:.34em .58em;vertical-align:top;line-height:1.5;
+  white-space:normal;word-break:break-word;overflow-wrap:anywhere}
+.text.md .md-tbl th{border-bottom:1px solid var(--line2);
+  background:color-mix(in srgb,#fff 6%,transparent);font-weight:600}
+/* 表格自己的横向滚动条：细、暗、不刺眼（默认那条白得发光） */
+.text.md .md-tblwrap::-webkit-scrollbar{height:6px}
+.text.md .md-tblwrap::-webkit-scrollbar-thumb{
+  background:color-mix(in srgb,var(--text) 15%,transparent);border-radius:3px}
+.text.md .md-tblwrap::-webkit-scrollbar-thumb:hover{
+  background:color-mix(in srgb,var(--text) 26%,transparent)}
+.text.md .md-tblwrap::-webkit-scrollbar-track{background:transparent}
+.text.md .md-tbl tr:last-child td{border-bottom:0}
+.text.md .md-tbl th:last-child,.text.md .md-tbl td:last-child{border-right:0}
+/* 嵌套列表：往里缩进一级，符号换成空心圆点 */
+.text.md .md-list .md-list{margin:.14em 0 .14em;padding-left:1.15em;list-style:circle}
 .text[contenteditable="true"]{
   /* 编辑区＝嵌进卡片里的一层暗槽：更深的底色 + 内阴影，
      不再用主色描边（原来那圈绿边和卡片外框撞色，看着像套了两层框）。 */
@@ -1039,7 +1072,7 @@ body:not(.sorting):not(.scrolling) .note.hovering .foot .acts span{opacity:1}   
   cursor:pointer; opacity:.26; z-index:2;
   color:color-mix(in srgb,var(--text) 82%,transparent);
   background:transparent;
-  transition:opacity .15s ease, background .15s ease, color .15s ease;
+  transition:opacity .15s ease, background .15s ease, color .15s ease, transform .1s ease;
 }
 .note .pin svg{width:12px;height:12px;fill:currentColor;display:block}
 body:not(.sorting):not(.scrolling) .note:hover .pin,
@@ -1049,6 +1082,21 @@ body:not(.sorting):not(.scrolling) .note.hovering .pin{opacity:.72}
   opacity:1;
   color:var(--accent);
   background:color-mix(in srgb,var(--accent) 16%,transparent);
+}
+/* 已置顶态的 hover / 按压。
+   原来只有 .pin.on 一条静态样式，而它和 .pin:hover 优先级相同且写在后面 →
+   置顶后悬浮完全没有变化（用户 2026-11-10 反馈）。这里显式补上更具体的选择器。 */
+.note .pin.on:hover{
+  background:color-mix(in srgb,var(--accent) 30%,transparent);
+  color:color-mix(in srgb,var(--accent) 86%,#fff);
+}
+.note .pin:active{
+  background:color-mix(in srgb,var(--accent) 38%,transparent);
+  transform:scale(.9);
+}
+.note .pin.on:active{
+  background:color-mix(in srgb,var(--accent) 44%,transparent);
+  transform:scale(.9);
 }
 /* 正文右边给角标让出 22px，避免第一行字被压住 */
 .note .text{padding-right:22px}
