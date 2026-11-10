@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-10-2828";
+var APPJS_VER = "2026-11-10-2829";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -1433,15 +1433,20 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     if (!host) return;
     host.innerHTML = NOTE_COLORS.map(function (c, i) {
       return '<div class="lgrow"><i style="background:' + c + '"></i>' +
-             '<input class="lgin" type="text" data-i="' + i + '" maxlength="5" spellcheck="false" ' +
+             '<input class="lgin" type="text" data-i="' + i + '" spellcheck="false" ' +
              'autocomplete="off" placeholder="' + (i + 1) + ' 号色" value="' + esc(labels[i] || "") + '">' +
              '</div>';
     }).join("");
     host.querySelectorAll(".lgin").forEach(function (el) {
       var i = parseInt(el.getAttribute("data-i"), 10);
+      // v2829：这里以前写死 maxlength="5"，但中文输入法上屏前的拼音也算长度 ——
+      // "xuesheng" 8 个字母直接超限，浏览器就不让开始输入（表现为"根本打不出字"），
+      // "kaifa" 5 个字母刚好卡在边上。所以上限只能在「上屏之后」按字数算，见 clipName。
+      var ime = false;
       var commit = function () {
-        var v = clipName(el.value);
-        if (v !== el.value) el.value = v;
+        var raw = el.value;
+        var v = clipName(raw);
+        if (v !== raw) el.value = v;
         if ((labels[i] || "") === v) return;
         var old = labels[i] || "";
         labels[i] = v;
@@ -1454,10 +1459,16 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
         renderStrip();
         render();
       };
-      el.addEventListener("input", commit);
-      el.addEventListener("blur", commit);
+      el.addEventListener("compositionstart", function () { ime = true; });
+      el.addEventListener("compositionend", function () { ime = false; commit(); });
+      el.addEventListener("input", function (e) {
+        // 拼音还没上屏时不要动它：一旦此刻回写 / 重画，输入法候选框会被打断
+        if (ime || e.isComposing) return;
+        commit();
+      });
+      el.addEventListener("blur", function () { ime = false; commit(); });
       el.addEventListener("keydown", function (e) {
-        if (e.key === "Enter") { e.preventDefault(); el.blur(); }
+        if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); el.blur(); }
       });
     });
   }
@@ -3323,7 +3334,11 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         var nl = takeLabels(st.labels);
         if (nl.join("\u0001") !== labels.join("\u0001")) {
           labels = nl;
-          if (settingsPanel && settingsPanel.classList.contains("on")) renderLabelGrid();
+          // v2829：正在这个格子里打字时绝不能重画（重建 DOM 会把输入法候选打断，
+          // 表现就是「还没上屏，字就没了」）。等失焦之后下一次回推再刷。
+          var typing = document.activeElement && document.activeElement.classList &&
+                       document.activeElement.classList.contains("lgin");
+          if (settingsPanel && settingsPanel.classList.contains("on") && !typing) renderLabelGrid();
           render();
         }
       }

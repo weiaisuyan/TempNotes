@@ -25,9 +25,19 @@ namespace TempNotes
         // —— v2813：优先级名称 —— 一个颜色一个名字，索引与前端 NOTE_COLORS 一一对应 ——
         public const int LabelCount = 10;
         public List<string> Labels { get; private set; }
-        public List<int> LabelOrder { get; private set; }     // chip 顺序：0..9 的一个排列（v2816）
+        private List<int> _labelOrder;                        // chip 顺序：0..9 的一个排列（v2816）
+        public List<int> LabelOrder
+        {
+            get { if (_labelOrder == null) _labelOrder = DefaultOrder(); return _labelOrder; }
+            private set { _labelOrder = value; }
+        }
         public string LabelsPath { get { return Path.Combine(Root, "labels.json"); } }
         private DateTime _labelsMtime = DateTime.MinValue;   // 已读盘的那份 labels.json 的 mtime（跨端热同步用）
+        // v2830：只有"确实从盘上读到过一份可信的名字"才允许写回。
+        // 2026-11-10 曾因为「读的时候被占用 → 拿到一份空默认值 → 用户一改名就整份覆盖」把名字抹掉一次，
+        // 所以这里把「没读到」和「读到的是空的」彻底分开：没读到就一个字节都不许写。
+        private bool _labelsLoaded = false;
+        private bool _labelsWarned = false;
 
         // —— v2810：数据改成「一条笔记一个文件」——
         // 单文件 notes.json 在两台机器同时写时是整个文件级的竞态：谁后写谁把对方的改动整份吃掉，
@@ -306,7 +316,10 @@ namespace TempNotes
 
             Db = new Database();
             Settings = LoadJson<Settings>(Path.Combine(Root, "settings.json"), SetSer) ?? new Settings();
-            Labels = LoadLabels();
+            var ll = LoadLabels();
+            // v2830：读不到就先用一份空表占位（前端要有东西可回推），但 _labelsLoaded 仍是 false，
+            // 谁都不许拿这份占位去覆盖盘上的真名字。
+            Labels = ll ?? new List<string>(new string[LabelCount]);
 
             _written.Clear();
             _seen.Clear();
@@ -722,20 +735,25 @@ namespace TempNotes
         {
             var list = new List<string>();
             for (int i = 0; i < LabelCount; i++) list.Add("");
-            LabelOrder = DefaultOrder();
-            if (!File.Exists(LabelsPath)) { _labelsMtime = DateTime.MinValue; return list; }
+            _labelsWarned = false;
+            if (!File.Exists(LabelsPath))
+            {
+                // 真的没有这个文件 —— 这是可信的「空」，允许之后写回
+                _labelsMtime = DateTime.MinValue;
+                _labelsLoaded = true;
+                return list;
+            }
 
             // v2828：labels.json 躺在 OneDrive 目录里，另一端或 OneDrive 自己随时可能在写它。
             // 以前这里复用 LoadJson —— 它把"读的时候被占用/读到半截"也当成坏档，直接改名成 .corrupt，
             // 等于一次偶发占用就把用户起的名字从界面上抹掉了（2026-11-10 实际发生过一次）。
-            // 现在：共享读 + 短重试；读不到就先当没改动，等下一次轮询；只有真的解析不了才留证，
-            // 而且只往 backup/ 复制一份，绝不动原名。
             byte[] data = ReadSharedBytes(LabelsPath);
             if (data == null || data.Length == 0)
             {
-                Log("labels.json 暂时读不到（可能正被写入），稍后重试");
-                _labelsMtime = DateTime.MinValue;
-                return list;
+                if (!_labelsWarned) { Log("labels.json 暂时读不到（可能正被写入），稍后重试"); _labelsWarned = true; }
+                _labelsMtime = DateTime.MinValue;   // 下次轮询立刻重试
+                _labelsLoaded = false;              // v2830：没读到 ≠ 空，谁都不许拿它去覆盖盘上的文件
+                return null;
             }
 
             LabelFile f = null;
@@ -763,17 +781,19 @@ namespace TempNotes
                     File.WriteAllBytes(Path.Combine(BackupDir, "labels-broken-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json"), data);
                 }
                 catch { }
-                Log("labels.json 解析失败，已复制一份到 backup/ 留证，本次先用默认值（原名不动）");
-                _labelsMtime = LastWriteUtc(LabelsPath);
-                return list;
+                Log("labels.json 解析失败，已复制一份到 backup/ 留证（原名不动），本次先不改内存里的名字");
+                _labelsMtime = DateTime.MinValue;
+                _labelsLoaded = false;
+                return null;
             }
 
+            // 只有真的解析成功，才动内存（Labels / LabelOrder / mtime）
             if (f.Labels != null)
                 for (int i = 0; i < LabelCount && i < f.Labels.Count; i++)
                     list[i] = ClipLabel(f.Labels[i]);
-            if (f.Order != null && f.Order.Count > 0)
-                LabelOrder = NormalizeOrder(f.Order);
+            if (f.Order != null && f.Order.Count > 0) LabelOrder = NormalizeOrder(f.Order);
             _labelsMtime = LastWriteUtc(LabelsPath);
+            _labelsLoaded = true;
             return list;
         }
 
@@ -827,6 +847,7 @@ namespace TempNotes
         {
             var v = NormalizeOrder(order);
             if (SameIntList(v, LabelOrder)) return false;
+            if (!EnsureLabelsLoaded()) return false;          // 读不到就别改，免得把名字一起写空
             LabelOrder = v;
             SaveLabels();
             return true;
@@ -849,7 +870,9 @@ namespace TempNotes
         /// <summary>设置某个优先级的名字。返回是否真的有变化（没变就不用回推前端）。</summary>
         public bool SetLabel(int index, string name)
         {
-            if (index < 0 || index >= LabelCount || Labels == null) return false;
+            if (index < 0 || index >= LabelCount) return false;
+            if (!EnsureLabelsLoaded()) return false;          // v2830：没读到就不写，绝不拿空表覆盖用户的名字
+            if (Labels == null) return false;
             var v = ClipLabel(name);
             if (string.Equals(Labels[index], v, StringComparison.Ordinal)) return false;
             Labels[index] = v;
@@ -857,10 +880,30 @@ namespace TempNotes
             return true;
         }
 
+        /// <summary>内存里的名字是不是可信的一份。不可信就先再读一次盘。</summary>
+        private bool EnsureLabelsLoaded()
+        {
+            if (_labelsLoaded && Labels != null) return true;
+            var ll = LoadLabels();
+            if (ll == null) return false;
+            Labels = ll;
+            return true;
+        }
+
         public void SaveLabels()
         {
             if (Labels == null) return;
-            if (LabelOrder == null) LabelOrder = DefaultOrder();
+            if (!_labelsLoaded) { Log("labels.json 还没读到可信内容，这次改名暂不落盘"); return; }
+            // 写之前先把旧文件复制一份留档（几十字节，出事能捞回来）
+            try
+            {
+                if (File.Exists(LabelsPath) && new FileInfo(LabelsPath).Length > 0)
+                {
+                    Directory.CreateDirectory(BackupDir);
+                    File.Copy(LabelsPath, Path.Combine(BackupDir, "labels-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json"), true);
+                }
+            }
+            catch { }
             var f = new LabelFile { Version = 1, Labels = new List<string>(Labels), Order = new List<int>(LabelOrder) };
             WriteAtomic(LabelsPath, LabSer, f);
             try { _labelsMtime = File.Exists(LabelsPath) ? LastWriteUtc(LabelsPath) : DateTime.MinValue; } catch { }
