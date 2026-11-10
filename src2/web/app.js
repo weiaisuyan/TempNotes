@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-10-2798";
+var APPJS_VER = "2026-11-10-2799";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -1756,12 +1756,17 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         var d = oldTop.top - c.getBoundingClientRect().top;
         if (Math.abs(d) < 1) return;
         try {
-          // 用 easeOutQuad（和拖动让位同一套手感）。
-          // 以前是 cubic-bezier(.16,1,.3,1) = easeOutExpo：起步就是最高速，
-          // 点击待办圈后卡片跨区飞过去，540ms 里前 130ms 就跑完 80% 距离，
-          // 视觉上就是「嗖一下」（用户 2026-11-09 反馈）。
+          // 跨区移动（待办 ⇄ 已完成、置顶 ⇄ 待办）的「飞过去」动画。
+          // 2026-11-10 用户反馈：两个方向都「太快」。原因是固定 620ms + easeOutQuad
+          //（起步即最高速），距离一远（比如从待办区顶部飞到已完成区底部，上千像素）
+          // 前 100ms 就跑掉一大半路程，看着像瞬移。
+          // 改法：①时长随距离增长（420~1200ms），近处不变慢、远处不瞬移；
+          //       ②缓动换成 ease-in-out 一类（cubic-bezier(.45,0,.25,1)），
+          //         起步和收尾都慢，中间最快——两头都不突兀。
+          var dist = Math.abs(d);
+          var dur = Math.round(Math.max(420, Math.min(1200, 300 + dist * 0.55)));
           c.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }],
-            { duration: 620, easing: "cubic-bezier(.25,.46,.45,.94)" });
+            { duration: dur, easing: "cubic-bezier(.45,0,.25,1)" });
         } catch (e) { }
       });
     }
