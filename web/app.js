@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-10-2831";
+var APPJS_VER = "2026-11-11-2832";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -4291,7 +4291,8 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
   }
 
   var _extOn = false;
-  var _extSlot = null;      // 目标笔记里的虚线空槽
+  var _extSlot = null;      // 目标笔记里的虚线空槽（始终指向第一格，落点插入以它为锚）
+  var _extSlots = [];       // 整组占位槽：一格 = 一个文件（最多 4 格）
   var _extNote = null;      // 空槽所在的卡片（落点就是它）
   var _extNoteId = "";      // 记 id：拖动过程中卡片万一被重渲染替换，落点也不会丢
 
@@ -4321,25 +4322,82 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     try { send("extdrag|0"); } catch (e) { }
   }
 
-  function ensureExtSlot() {
-    if (_extSlot) return _extSlot;
-    var s = document.createElement("div");
-    s.className = "att att-slot";
-    // 文件名那行留个空位（高度与真实附件一致），预览不会比落地后矮一截
-    s.innerHTML = '<div class="thumbbox"></div><div class="nm"></div>';
-    _extSlot = s;
-    return s;
+  function ensureExtSlots(n) {
+    var want = Math.max(1, Math.min(4, n || 1));
+    while (_extSlots.length < want) {
+      var s = document.createElement("div");
+      s.className = "att att-slot";
+      // 文件名那行留个空位（高度与真实附件一致），预览不会比落地后矮一截
+      s.innerHTML = '<div class="thumbbox"></div><div class="nm"></div>';
+      _extSlots.push(s);
+    }
+    while (_extSlots.length > want) {
+      var z = _extSlots.pop();
+      try { if (z.parentNode) z.parentNode.removeChild(z); } catch (eZ) { }
+    }
+    _extSlot = _extSlots[0] || null;
+    return _extSlots;
   }
 
   function removeExtSlot(animate) {
-    if (!_extSlot) return;
-    var s = _extSlot;
+    if (!_extSlots.length) return;
+    var slots = _extSlots;
+    _extSlots = [];
     _extSlot = null;
-    var box = s.parentNode;
-    try { if (box) box.removeChild(s); } catch (e) { }
+    var box = slots[0].parentNode;
+    for (var i = 0; i < slots.length; i++) {
+      try { if (slots[i].parentNode) slots[i].parentNode.removeChild(slots[i]); } catch (e) { }
+    }
     if (animate && box && box.parentNode && !box.querySelector(".att")) {
       attBoxShrink(box, box.getBoundingClientRect().height, true);
     }
+  }
+
+  /* 把整组占位槽摆到 ref 前面。
+     原来的 attMoveWithFlip 只搬一个元素，槽变多之后必须整组搬：
+     除槽以外的格子照旧走 FLIP 让位，槽自己是锚、不参与补间。 */
+  function extPlaceSlots(box, ref, n) {
+    var slots = ensureExtSlots(n);
+    if (!box || !slots.length) return;
+    // 已经就位（第一个槽的下一兄弟正好是 ref，其余槽依次相邻）
+    var ok = true;
+    for (var i = 0; i < slots.length; i++) {
+      var want = (i === slots.length - 1) ? ref : slots[i + 1];
+      if (slots[i].parentNode !== box || slots[i].nextElementSibling !== (want || null)) { ok = false; break; }
+    }
+    if (ok) return;
+    // 真实附件（不含槽）：0 → 有 时卡片高度是突变，补一段高度动画
+    var realAtts = 0;
+    var all = box.querySelectorAll(".att");
+    for (var q = 0; q < all.length; q++) if (slots.indexOf(all[q]) < 0) realAtts++;
+    var recs = [];
+    Array.prototype.forEach.call(box.children, function (k) {
+      if (slots.indexOf(k) >= 0) return;
+      var r = k.getBoundingClientRect();     // 视觉位置（含正在进行的动画）
+      recs.push([k, r.left, r.top]);
+    });
+    recs.forEach(function (rec) {
+      var k = rec[0];
+      if (k.__flip) { try { k.__flip.cancel(); } catch (e2) { } }
+      k.__flip = null;
+    });
+    for (var j = 0; j < slots.length; j++) box.insertBefore(slots[j], ref || null);
+    if (realAtts === 0 && box.querySelectorAll(".att").length) attBoxGrow(box);
+    recs.forEach(function (rec) {
+      var k = rec[0];
+      if (!k.parentNode) return;
+      var r = layoutRect(k);                   // 新位置的布局坐标（已无动画）
+      var dx = Math.round(rec[1] - r.left), dy = Math.round(rec[2] - r.top);
+      if (!dx && !dy) return;
+      try {
+        var a = k.animate(
+          [{ transform: "translate(" + dx + "px," + dy + "px)" }, { transform: "none" }],
+          { duration: 620, easing: "cubic-bezier(.25,.46,.45,.94)" });
+        k.__flip = a;
+        a.onfinish = function () { if (k.__flip === a) k.__flip = null; };
+        a.oncancel = function () { if (k.__flip === a) k.__flip = null; };
+      } catch (e3) { }
+    });
   }
 
   /* 和 attInsertPointAt 同一套「阅读顺序」判定，只是没有正在拖的元素 */
@@ -4426,7 +4484,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         _dropTargetEl = hit.noteEl;
         hit.noteEl.classList.add("drop-target");
       }
-      attMoveWithFlip(hit.box, ensureExtSlot(), hit.ref);
+      extPlaceSlots(hit.box, hit.ref, _dragFileCount);
       return;
     }
     // 空白 / 输入框：这次松手会新建一条
@@ -4484,9 +4542,22 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     _dragKind = dragHasFiles(e.dataTransfer) ? "file" : "text";
     try {
       var its = e.dataTransfer.items;
-      if (_dragKind === "file" && its && its.length) _dragFileCount = its.length;
-      else if (_dragKind === "file" && e.dataTransfer.files && e.dataTransfer.files.length) _dragFileCount = e.dataTransfer.files.length;
-      else _dragFileCount = 1;
+      if (_dragKind === "file" && its && its.length) {
+        // 文件数只能数 kind === "file" 的项：微信 / 浏览器在文件之外还会挂
+        // text/plain、text/uri-list 之类的 string 项（实测拖 1 个 MD 变 3 项、
+        // 拖 2 张图变 4 项），拿 items.length 当文件数会让预览块凭空多出来。
+        var nfile = 0;
+        for (var ii = 0; ii < its.length; ii++) {
+          try { if (its[ii] && its[ii].kind === "file") nfile++; } catch (eK) { }
+        }
+        if (nfile > 0) _dragFileCount = nfile;
+        else if (e.dataTransfer.files && e.dataTransfer.files.length) _dragFileCount = e.dataTransfer.files.length;
+        else _dragFileCount = its.length;   // kind 取不到时保持旧行为
+      } else if (_dragKind === "file" && e.dataTransfer.files && e.dataTransfer.files.length) {
+        _dragFileCount = e.dataTransfer.files.length;
+      } else {
+        _dragFileCount = 1;
+      }
     } catch (e12) { }
     extBegin();
     _dragPt = { x: e.clientX, y: e.clientY };
@@ -4496,6 +4567,8 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     _dragRaf = requestAnimationFrame(function () {
       _dragRaf = 0;
       if (!_dragPt) return;
+      // 刚松手：这一帧是 drop 之前排进来的，别再摆一遍预览（否则清洗完的占位槽又长回来）
+      if (_dropDoneAt && Date.now() - _dropDoneAt < 1500) return;
       // 已经摆好预览、指针又几乎没动：没必要每帧再跑一遍 elementFromPoint + 一排 rect。
       var mdx = _dragPt.x - _dropAX, mdy = _dragPt.y - _dropAY;
       if (_dropApplied && mdx * mdx + mdy * mdy < 6) { armDropWatch(); return; }
