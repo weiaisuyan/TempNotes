@@ -1292,3 +1292,18 @@ body.chip-dragging,body.chip-dragging *{cursor:grabbing!important;user-select:no
   content:"";position:absolute;left:0;right:0;top:-7px;height:1px;
   background:rgba(255,255,255,.075);
 }
+/* ===== 已完成卡片里的附件：跟着正文一起置灰弱化 ===== */
+.note.done .att .thumb,
+.note.done .att .thumbbox{
+  filter:grayscale(1) brightness(.68) contrast(.88);
+  opacity:.42;
+  transition:filter .3s ease, opacity .3s ease, transform .34s cubic-bezier(.22,1,.36,1), box-shadow .3s ease;
+}
+.note.done .att .play{opacity:.4;transition:opacity .2s ease}
+.note.done .att .nm,
+.note.done .att .nm .ex{color:var(--text-done)}
+.note.done .att.hot .thumb{filter:brightness(1.1) saturate(1.06);opacity:1}
+.note.done .att.hot .thumbbox{filter:brightness(1.12) drop-shadow(0 8px 14px rgba(0,0,0,.55));opacity:1}
+.note.done .att.hot .play{opacity:1}
+.note.done .att.hot .nm,
+.note.done .att.hot .nm .ex{color:var(--text)}
