@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-11-2834";
+var APPJS_VER = "2026-11-11-2835";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -37,6 +37,11 @@ var APPJS_VER = "2026-11-11-2834";
   var batchMode = false;
   var batchSel = {};
   var query = "";
+  /* v2835：卡片里最多渲染这么多字符。
+     起因是有人把 158 万字符的会话记录存成了待办：整篇塞进 DOM 后一次重建要 1.3–1.9s
+     （4.9 万个节点、3.75MB HTML），而界面上本来也只显示 15 行。
+     超过这个数就只渲染前面一段 + 一条「全文 N 字 · 展开」，点开走大文本查看器。 */
+  var TEXT_LIMIT = 1200;
   /* v2813：优先级名称（= 颜色的名字，最多 5 字）与筛选态。
      labels 的索引与 NOTE_COLORS 一一对应，由 C# 的 labels.json 推下来（window.api.setState）；
      fkey 是纯前端视图态：null=全部 / 颜色 hex / "__none__"=没设优先级，绝不落盘。 */
@@ -170,10 +175,38 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       .split(/\s+/)
       .filter(function (x, i, arr) { return x && arr.indexOf(x) === i; });
   }
+  /* v2835：搜索用的 haystack 缓存。
+     以前每敲一个键都把每条笔记重新 normalize("NFKC")+toLowerCase() 一遍，
+     那条 158 万字符的笔记一次就要 2 秒；现在按 id + 变更指纹缓存，全文照样能搜到，
+     只在内容真的变了之后重算一次。 */
+  var _hayCache = {};
+  function hayStamp(n) {
+    return (n.updated || 0) + "|" + String(n.text || "").length + "|" + ((n.atts || []).length);
+  }
   function noteHaystack(n) {
+    var key = n.id || "";
+    var stamp = hayStamp(n);
+    var c = _hayCache[key];
+    if (c && c.stamp === stamp) return c.hay;
     var parts = [n.text || ""];
     (n.atts || []).forEach(function (a) { if (a && a.name) parts.push(a.name); });
-    return parts.join("\n").normalize("NFKC").toLowerCase().replace(/[\u0300-\u036f]/g, "");
+    var hay = parts.join("\n").normalize("NFKC").toLowerCase().replace(/[\u0300-\u036f]/g, "");
+    _hayCache[key] = { stamp: stamp, hay: hay };
+    return hay;
+  }
+  /* 空闲时预先把长文的 haystack 建好，第一次搜索就不用等那一下 */
+  var _hayTimer = 0;
+  function warmHaystacks(arr) {
+    clearTimeout(_hayTimer);
+    _hayTimer = setTimeout(function () {
+      var list = (arr || notes).filter(function (n) { return String(n.text || "").length > 50000; });
+      var i = 0;
+      (function step() {
+        var t0 = performance.now();
+        while (i < list.length && performance.now() - t0 < 30) { noteHaystack(list[i]); i++; }
+        if (i < list.length) setTimeout(step, 16);
+      })();
+    }, 2500);
   }
   function noteMatches(n, terms) {
     if (!terms || !terms.length) return true;
@@ -192,6 +225,34 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
            - [ ] / - [x] 任务项、--- 分隔线、[文字](http…) 链接。
      搜索态（query 非空）仍然走 hlText 的纯文本高亮 —— 高亮要按字符定位，
      套在解析后的 HTML 上会错位。 */
+  /* v2835：超长正文的截断与字数显示 */
+  function clipText(t, limit) {
+    var s = String(t == null ? "" : t);
+    if (!limit || s.length <= limit) return s;
+    var head = s.slice(0, limit);
+    // 截断点落在未闭合的 ``` 围栏里时补一个收尾，否则剩下半个代码块会被当成整段代码
+    if (((head.match(/```/g) || []).length) % 2) head += "\n```\n";
+    return head;
+  }
+  function isClipped(n) {
+    return !!n && String(n.text || "").length > TEXT_LIMIT;
+  }
+  function fmtChars(n) {
+    n = n || 0;
+    if (n >= 10000) return (Math.round(n / 1000) / 10).toString().replace(/\.0$/, "") + " 万";
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  /* v2835：回收站列表的一行预览。先截断再压缩空白，别对 158 万字符跑正则。 */
+  var TRASH_PREVIEW = 120;
+  function trashPreview(t) {
+    var s = String(t == null ? "" : t);
+    if (s.length > 400) s = s.slice(0, 400);
+    s = s.replace(/[\s\u00a0]+/g, " ").trim();
+    if (!s) return "（无正文）";
+    return s.length > TRASH_PREVIEW ? s.slice(0, TRASH_PREVIEW) + "…" : s;
+  }
+
   function mdHtml(t) {
     var stash = [];
     function keep(html) {
@@ -2165,6 +2226,10 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
       var tname = cc ? labelOf(cc) : "";
       var atts = (n.atts && n.atts.length)
         ? '<div class="atts">' + n.atts.map(attHtml).join("") + '</div>' : "";
+      // v2835：只渲染前 TEXT_LIMIT 个字符，整篇走「预览（N 字）」进大文本查看器
+      var fullText = n.text || "";
+      var clipped = fullText.length > TEXT_LIMIT;
+      var shownText = clipped ? clipText(fullText, TEXT_LIMIT) : fullText;
 
       return '<div class="note' + (done?" done":"") + (n.id===selectedId?" selected":"") +
              '" data-id="' + esc(n.id) + '" data-done="' + (done?"1":"0") + '">' +
@@ -2183,7 +2248,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
                  '</div>') +
                '<div class="body">' +
                  '<div class="text' + (query ? "" : " md") + '" data-act="text">' +
-                   (query ? hlText(n.text, query) : mdHtml(n.text)) + '</div>' + atts +
+                   (query ? hlText(shownText, query) : mdHtml(shownText)) + '</div>' + atts +
                  '<div class="foot">' +
                    '<span class="upd">' + fmtStamp(n.updated) + '</span>' +
                    '<div class="acts"><span class="made">建 ' + fmtStamp(n.created) + '</span>' +
@@ -2877,15 +2942,26 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     var textEl = card.querySelector("[data-act='text']");
     var btn = card.querySelector("[data-act='expand']");
     if (!textEl || !btn) return;
+    // v2835：被截断的笔记不在这张卡里展开（展开就是把整篇塞回 DOM，正是卡顿来源）。
+    // 还是原来那颗「预览」，只在后面把字数标出来；点它进大文本查看器。
+    if (isClipped(find(id))) {
+      textEl.classList.remove("open");
+      btn.style.display = "";
+      btn.textContent = "预览（" + fmtChars(String((find(id) || {}).text || "").length) + " 字）";
+      return;
+    }
     var open = !!_expanded[id];
     textEl.classList.toggle("open", open);
     var over = open ? true : textOverflows(textEl);
     btn.style.display = over ? "" : "none";
-    btn.textContent = open ? "收起" : "预览";
+    var n0 = find(id);
+    var cnt = n0 ? String(n0.text || "").length : 0;
+    btn.textContent = open ? "收起" : (over && cnt ? "预览（" + fmtChars(cnt) + " 字）" : "预览");
   }
 
   function toggleExpand(card, id) {
     if (!card) return;
+    if (isClipped(find(id))) { openRaw(id); return; }
     if (_expanded[id]) delete _expanded[id]; else _expanded[id] = 1;
     syncExpand(card);
   }
@@ -2895,10 +2971,150 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     listEl.querySelectorAll(".note").forEach(function (c) { syncExpand(c); });
   }
 
+  /* ---------- 大文本查看器（v2835） ----------
+     卡片只渲染前 TEXT_LIMIT 个字符，整篇在这里分页看。
+     每页 RAW_PAGE 字符用 textContent 赋值：不跑 HTML 解析、也不跑 mdHtml 的全文正则，
+     所以 158 万字符的笔记翻页也是毫秒级。 */
+  var RAW_PAGE = 12000;
+  var _raw = { id: null, page: 0, editing: false, pages: null, pageLen: 0, pid: null };
+  var rawPanel = document.getElementById("rawpanel");
+  var rawBody = document.getElementById("rawBody");
+  var rawMd = document.getElementById("rawMd");
+  var rawTa = document.getElementById("rawEdit2");
+  var rawTitleEl = document.getElementById("rawTitle");
+  var rawMetaEl = document.getElementById("rawMeta");
+  var rawPageEl = document.getElementById("rawPage");
+  var rawPrevBtn = document.getElementById("rawPrev");
+  var rawNextBtn = document.getElementById("rawNext");
+  var rawEditBtn = document.getElementById("rawEdit");
+  var rawSaveBtn = document.getElementById("rawSave");
+
+  function rawNote() { return _raw.id ? find(_raw.id) : null; }
+
+  /* 把全文切成若干页：断行处切，且不切在未闭合的 ``` 围栏里，
+     否则一页会从半个代码块开始，阅读态就废了。 */
+  function buildPages(t) {
+    var out = [], i = 0, len = t.length;
+    while (i < len) {
+      var end = Math.min(len, i + RAW_PAGE);
+      if (end < len) {
+        var nl = t.lastIndexOf("\n", end);
+        if (nl > i + Math.floor(RAW_PAGE * 0.55)) end = nl + 1;
+        var seg = t.slice(i, end);
+        if (((seg.match(/```/g) || []).length) % 2) {      // 停在围栏里 → 补到收尾
+          var close = t.indexOf("```", end);
+          if (close < 0) end = len;
+          else {
+            var nl2 = t.indexOf("\n", close);
+            end = nl2 < 0 ? len : nl2 + 1;
+          }
+        }
+      }
+      out.push(t.slice(i, end));
+      i = end;
+    }
+    if (!out.length) out.push("");
+    return out;
+  }
+
+  function rawPages(n) {
+    var t = n.text || "";
+    if (_raw.pages && _raw.pageLen === t.length && _raw.pid === n.id) return _raw.pages;
+    _raw.pages = buildPages(t);
+    _raw.pageLen = t.length;
+    _raw.pid = n.id;
+    return _raw.pages;
+  }
+
+  function rawPaint() {
+    var n = rawNote();
+    if (!n) return;
+    var pages = rawPages(n);
+    var page = Math.min(Math.max(0, _raw.page | 0), pages.length - 1);
+    _raw.page = page;
+    rawMd.innerHTML = mdHtml(pages[page]);        // 只渲染这一页（约 1.2 万字）
+    rawBody.scrollTop = 0;
+    rawPageEl.textContent = (page + 1) + " / " + pages.length;
+    rawPrevBtn.disabled = page <= 0;
+    rawNextBtn.disabled = page >= pages.length - 1;
+    rawMetaEl.textContent = fmtChars((n.text || "").length) + " 字 · 第 " + (page + 1) + " / " + pages.length + " 页";
+    rawTitleEl.textContent = "全文";
+  }
+
+  function rawMode(edit) {
+    var n = rawNote();
+    if (!n) return;
+    _raw.editing = !!edit;
+    rawBody.style.display = _raw.editing ? "none" : "";
+    rawTa.style.display = _raw.editing ? "" : "none";
+    rawPrevBtn.style.display = _raw.editing ? "none" : "";
+    rawNextBtn.style.display = _raw.editing ? "none" : "";
+    rawPageEl.style.display = _raw.editing ? "none" : "";
+    rawEditBtn.style.display = _raw.editing ? "none" : "";
+    rawSaveBtn.style.display = _raw.editing ? "" : "none";
+    if (_raw.editing) {
+      rawTa.value = n.text || "";
+      rawTitleEl.textContent = "编辑全文";
+      rawTa.scrollTop = 0;
+    } else rawPaint();
+    syncHotzones();
+  }
+
+  function openRaw(id, edit) {
+    if (!find(id)) return;
+    _raw.id = id;
+    _raw.page = 0;
+    _raw.pages = null;
+    rawPanel.classList.add("on");
+    rawMode(!!edit);
+  }
+
+  function closeRaw() {
+    if (!rawPanel.classList.contains("on")) return;
+    rawPanel.classList.remove("on");
+    rawBody.style.display = "";
+    rawTa.style.display = "none";
+    rawEditBtn.style.display = "";
+    rawSaveBtn.style.display = "none";
+    rawPrevBtn.style.display = "";
+    rawNextBtn.style.display = "";
+    rawPageEl.style.display = "";
+    _raw.id = null;
+    _raw.editing = false;
+    syncHotzones();
+  }
+
+  function rawCommit() {
+    var n = rawNote();
+    if (!n) return;
+    var nt = rawTa.value.replace(/\r\n/g, "\n");
+    if (nt === (n.text || "")) { showHint("没有改动"); rawMode(false); return; }
+    n.text = nt;
+    send("update|" + n.id + "|" + encodeURIComponent(nt));
+    showHint("已保存");
+    rawMode(false);
+  }
+
+  on("rawClose", closeRaw);
+  on("rawPrev", function () { _raw.page = Math.max(0, (_raw.page | 0) - 1); rawPaint(); });
+  on("rawNext", function () { _raw.page = (_raw.page | 0) + 1; rawPaint(); });
+  on("rawEdit", function () { rawMode(true); });
+  on("rawSave", rawCommit);
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (!rawPanel || !rawPanel.classList.contains("on")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (_raw.editing) rawMode(false); else closeRaw();
+  }, true);
+
   /* ---------- 编辑 ---------- */
   function startEdit(id) {
     var card = listEl.querySelector('.note[data-id="' + id + '"]');
     if (!card) return;
+    // v2835：超长笔记不在卡片里编辑（158 万字符挂到 contenteditable 上会冻住界面），
+    // 直接进查看器的编辑模式，用 textarea 改。
+    if (isClipped(find(id))) { openRaw(id, true); return; }
     var textEl = card.querySelector("[data-act='text']");
     if (!textEl) return;
 
@@ -3277,6 +3493,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
 
       render(true);
       if (wrapEl) wrapEl.scrollTop = keep;
+      try { warmHaystacks(notes); } catch (e0) { }
 
       // 按 Enter 新建：新卡片从「输入框那一格」滑下来落到自己的位置
       // （置顶区在上面时，就能看到它一路滑过置顶区，而不是凭空出现）
@@ -3336,11 +3553,15 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         return;
       }
       trashList.innerHTML = trash.map(function (n) {
+        // v2835：回收站里以前把整篇正文塞进一行（158 万字 = 2.5 万行），一进去就冻住。
+        // 这里只取一段预览，字数单独标出来。
+        var len = String(n.text || "").length;
+        var size = len > TRASH_PREVIEW ? '<span class="ln">' + fmtChars(len) + ' 字</span>' : "";
         return '<div class="trashitem" data-id="' + esc(n.id) + '">' +
-          '<div class="t">' + esc(n.text) + '</div>' +
+          '<div class="t">' + esc(trashPreview(n.text)) + '</div>' +
           '<div class="a"><span data-act="restore">恢复</span>' +
           '<span class="del" data-act="purge">彻底删除</span>' +
-          '<span style="margin-left:auto;color:var(--faint)">' +
+          '<span style="margin-left:auto;color:var(--faint)">' + size +
           (fmtDay(n.updated)?fmtDay(n.updated)+" ":"") + fmtTime(n.updated) + '</span></div></div>';
       }).join("");
       trashList.querySelectorAll("[data-act]").forEach(function (el) {

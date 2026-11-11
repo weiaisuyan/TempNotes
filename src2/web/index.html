@@ -110,6 +110,29 @@
     </div>
   </div>
 
+  <!-- 大文本查看器：超长笔记不在卡片里展开，在这里分页看/改 -->
+  <div class="panel rawpanel" id="rawpanel">
+    <div class="box">
+      <div class="hd">
+        <b id="rawTitle">全文</b>
+        <span class="thmeta" id="rawMeta"></span>
+        <span class="x" id="rawClose">✕</span>
+      </div>
+      <div class="bd">
+        <div class="rawbody" id="rawBody"><div class="text md open" id="rawMd"></div></div>
+        <textarea class="rawedit" id="rawEdit2" spellcheck="false" style="display:none"></textarea>
+        <div class="rawnav">
+          <button id="rawPrev" type="button">上一页</button>
+          <span id="rawPage">1 / 1</span>
+          <button id="rawNext" type="button">下一页</button>
+          <span class="spacer"></span>
+          <button id="rawEdit" class="primary" type="button">编辑全文</button>
+          <button id="rawSave" type="button" style="display:none">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="Sortable.min.js?v=2831"></script>
   <script src="app.js?v=2832"></script>
 </body>

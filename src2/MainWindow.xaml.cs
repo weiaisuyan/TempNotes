@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
@@ -984,6 +984,48 @@ namespace TempNotes2
             catch { }
         }
 
+        /// <summary>
+        /// 窗口最小尺寸：按标题栏两块的实际需要量算出来，不写死。
+        /// 标题栏是「左块(Auto) | 空白(*) | 右块(Auto)」，两块真实宽度 + 两侧边框就是窗口
+        /// 不能再窄的硬下限 —— 少一个像素右块就会被裁到窗外（老版本更糟：直接叠上去）。
+        /// 100% DPI 下左块 106 + 右块 227 → 352 左右；换字体、换 DPI、以后再加按钮都会自己跟上。
+        /// </summary>
+        private void ApplyMinWindowSize()
+        {
+            try
+            {
+                if (TbLeft == null || TbRight == null) return;
+
+                // Auto 列里这两块是按「内容自然宽度」量过的，DesiredSize 就是各自需要的宽度（含外边距）
+                double lw = TbLeft.DesiredSize.Width;
+                double rw = TbRight.DesiredSize.Width;
+
+                // 量不到（布局还没跑）或量出离谱值时，退回 XAML 里按 100% DPI 实测算的 352
+                double need = 352;
+                if (lw > 40 && rw > 40 && lw < 500 && rw < 500)
+                {
+                    // +2 是 RootBorder 左右各 1 的边线，+16 是两块之间的呼吸位
+                    need = Math.Ceiling(lw + rw + 2 + 16);
+                }
+
+                MinWidth = Math.Max(300, need);
+                if (double.IsNaN(MinHeight) || MinHeight < 300) MinHeight = 300;
+
+                // 正常启动时窗口 460 宽，比下限宽，不动它；
+                // 只有当前尺寸比下限还窄（极端 DPI / 老配置）才收进来
+                if (Width < MinWidth) Width = MinWidth;
+                if (Height < MinHeight) Height = MinHeight;
+
+                if (LogMsg != null)
+                    LogMsg("最小窗口 " + MinWidth.ToString("0") + "×" + MinHeight.ToString("0")
+                           + "（标题栏左块 " + lw.ToString("0.#") + " + 右块 " + rw.ToString("0.#") + "）");
+            }
+            catch (Exception ex)
+            {
+                try { if (LogMsg != null) LogMsg("算最小窗口失败（已忽略）：" + ex.Message); } catch { }
+            }
+        }
+
         private async void OnLoaded(object sender, RoutedEventArgs e)
         {
             string root = AppDomain.CurrentDomain.BaseDirectory;
@@ -1001,7 +1043,8 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2834 已完成附件改为轻淡弱化（不再置灰）");
+                log("版本 2836 窗口最小尺寸按标题栏实测算（窄到头也不会图标重叠）");
+                ApplyMinWindowSize();   // 必须在第一次布局之后（Loaded 里）算，DesiredSize 才有效
             _store = new Store();
                 _store.Load();
                 log("Store 载入，笔记 " + _store.Db.Notes.Count + " 条，根目录 " + _store.Root);

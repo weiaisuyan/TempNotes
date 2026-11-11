@@ -4,6 +4,7 @@
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="随记" Height="760" Width="460"
+        MinWidth="352" MinHeight="300"
         WindowStartupLocation="CenterScreen"
         Background="#060606"
         WindowStyle="None"
@@ -202,14 +203,25 @@
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <!-- ===== 标题栏（WPF 原生，WindowChrome 负责拖动/双击最大化） ===== -->
+            <!-- ===== 标题栏（WPF 原生，WindowChrome 负责拖动/双击最大化） =====
+                 三列：左块(Auto) | 空白(*) | 右块(Auto)。
+                 以前是两块贴左贴右挤在同一个格子里 —— 窗口一窄，右块就往左顶，
+                 图标直接叠在「随记」和批量按钮上。分列之后，两块**结构上不可能重叠**：
+                 最窄时也只是右块被裁到窗口外，再配上运行时算出来的 MinWidth 就彻底没了。
+                 中间的 * 列是空白，正好当拖动区。 -->
             <Grid Grid.Row="0" Background="Transparent">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
                 <!-- 左侧：图标 + 标题（不接收点击，保证空白处还能拖窗口）+ 批量编辑按钮
                      这里必须 Stretch（占满标题栏整高），不能只靠 Center：
                      左侧容器若只有内容那么高（22 DIP）再居中，起点是 7 DIP；右侧按钮组被
                      36 高的窗口按钮撑满、起点是 0。两边都算 7 DIP，但 UseLayoutRounding 在
                      0.5 DIP 处的舍入方向不同 → 150% DPI 下批量编辑图标比设置图标高 1 物理像素。 -->
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Stretch" Margin="12,0,0,0">
+                <StackPanel x:Name="TbLeft" Grid.Column="0"
+                            Orientation="Horizontal" VerticalAlignment="Stretch" Margin="12,0,0,0">
                     <StackPanel Orientation="Horizontal" IsHitTestVisible="False">
                         <Image x:Name="AppIconImg" Width="22" Height="22" VerticalAlignment="Center"/>
                         <TextBlock Text="随记" Margin="10,0,0,0" FontSize="15"
@@ -228,7 +240,8 @@
                     </Button>
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                <StackPanel x:Name="TbRight" Grid.Column="2"
+                            Orientation="Horizontal" HorizontalAlignment="Right"
                             VerticalAlignment="Center" Margin="0,0,4,0">
                     <!-- 批量编辑挪到左侧；回收站挪进设置面板 -->
                     <Button x:Name="BtnGuide" Style="{StaticResource TBtn}" ToolTip="Markdown 语法速查"
