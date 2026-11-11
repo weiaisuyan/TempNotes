@@ -1295,8 +1295,8 @@ body.chip-dragging,body.chip-dragging *{cursor:grabbing!important;user-select:no
 /* ===== 已完成卡片里的附件：跟着正文一起置灰弱化 ===== */
 .note.done .att .thumb,
 .note.done .att .thumbbox{
-  filter:grayscale(1) brightness(.68) contrast(.88);
-  opacity:.42;
+  filter:grayscale(0) brightness(1) contrast(1);
+  opacity:.70;
   transition:filter .3s ease, opacity .3s ease, transform .34s cubic-bezier(.22,1,.36,1), box-shadow .3s ease;
 }
 .note.done .att .play{opacity:.4;transition:opacity .2s ease}
