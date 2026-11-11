@@ -482,7 +482,9 @@ body.batch .ring{opacity:0;visibility:hidden;pointer-events:none;transform:scale
 .text.md .md-pre{margin:.34em 0;padding:.52em .68em;border-radius:7px;
   background:color-mix(in srgb,#000 45%,transparent);
   border:1px solid color-mix(in srgb,var(--line) 60%,transparent);
-  overflow:auto;max-height:16em;white-space:pre;
+  /* v2835：卡片本来就窄，一个长路径就能顶出横向滚动条（默认浅色，在深色卡上很扎眼）。
+     代码块改成软换行 + 不横向滚动，长行自己折。 */
+  overflow-y:auto;overflow-x:hidden;max-height:16em;white-space:pre-wrap;word-break:break-word;
   font:400 .86em/1.5 Consolas,"Cascadia Mono",ui-monospace,monospace;color:var(--text)}
 .text.md .md-inline{
   font:400 .9em/1.4 Consolas,"Cascadia Mono",ui-monospace,monospace;
@@ -872,7 +874,10 @@ body:not(.sorting):not(.scrolling) .note.hovering .foot .acts span{opacity:1}   
   border:1px solid var(--line);border-radius:10px;
   padding:10px 12px;margin-bottom:8px;
 }
-.trashitem .t{font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.trashitem .t{font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+  /* v2835：最多两行，超了省略。正文再长也不会把回收站撑成一屏一屏的 */
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.trashitem .a .ln{color:var(--accent);opacity:.85;margin-right:8px}
 .trashitem .a{display:flex;gap:10px;margin-top:7px;font-size:11.5px}
 .trashitem .a span{cursor:pointer;color:var(--muted);padding:2px 6px;border-radius:5px}
 .trashitem .a span:hover{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
@@ -1292,3 +1297,44 @@ body.chip-dragging,body.chip-dragging *{cursor:grabbing!important;user-select:no
   content:"";position:absolute;left:0;right:0;top:-7px;height:1px;
   background:rgba(255,255,255,.075);
 }
+/* ===== 大文本查看器（v2835） =====
+   超长笔记不再整篇塞进卡片 DOM：卡片只渲染前 TEXT_LIMIT 个字符，
+   卡片底那颗原有的「预览」按钮后面标出字数，点开在这里分页看。
+   每页按 Markdown 渲染成阅读态（只渲染当前页，所以再怎么长也不卡）。 */
+.rawpanel .box{height:100%}
+.rawpanel .bd{padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-height:0;flex:1}
+.rawbody{
+  flex:1;min-height:0;overflow:auto;
+  background:color-mix(in srgb,var(--bg) 55%,transparent);
+  border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+}
+/* 页内正文直接复用卡片的 Markdown 排版（.text.md.open 已解除 15 行折叠） */
+.rawbody .text{font-size:12.5px;line-height:1.62;padding-right:0}
+.rawedit{
+  flex:1;min-height:0;width:100%;resize:none;
+  font-family:Consolas,"Cascadia Mono",monospace;font-size:12px;line-height:1.55;
+  background:color-mix(in srgb,var(--bg) 55%,transparent);color:var(--text);
+  border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+}
+.rawnav{display:flex;align-items:center;gap:8px;flex:0 0 auto;font-size:12px;color:var(--muted)}
+.rawnav .spacer{flex:1}
+.rawnav button{
+  background:transparent;border:1px solid var(--line);color:var(--text);
+  font:inherit;font-size:12px;padding:6px 11px;border-radius:8px;cursor:pointer;
+}
+.rawnav button:disabled{opacity:.35;cursor:default}
+.rawnav button.primary{border-color:color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent)}
+
+/* ===== 滚动条统一暗色（v2835） =====
+   代码块、查看器、textarea 之前用系统默认滚动条：浅底白条，在深色卡片上很扎眼。
+   color-scheme:dark 让系统控件（含滚动条）按暗色绘制，再统一细滑块。 */
+:root{color-scheme:dark}
+*{scrollbar-width:thin;scrollbar-color:rgba(234,243,239,.22) transparent}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{
+  background:rgba(234,243,239,.20);border-radius:999px;
+  border:2px solid transparent;background-clip:padding-box;
+}
+::-webkit-scrollbar-thumb:hover{background:rgba(234,243,239,.34);background-clip:padding-box}
+::-webkit-scrollbar-corner{background:transparent}
