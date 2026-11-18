@@ -127,19 +127,16 @@ namespace TempNotes
         /// 太长就试一次 tinyurl（失败返回清理后的原链）。
         /// 只在后台线程调用，避免卡住 UI。
         /// </summary>
+        /// <summary>
+        /// 不再把长链接换成 TinyURL 短链。
+        /// TinyURL 会把「老 API 生成、没带 key」的短链判成过期，先跳到
+        /// tinyurl.com/preview/deprecated/&lt;code&gt; 提示页停几秒才转正，
+        /// 用户点开卡片要多等好几秒，属于不可接受的第三方插队。
+        /// 现在原样返回清理过的真实地址，卡片上改用域名当锚文本（见 WeChatRecord.BuildCardDisplay）。
+        /// </summary>
         public static string ShortenUrl(string url)
         {
-            string clean = CleanUrl(url);
-            if (string.IsNullOrEmpty(clean) || clean.Length <= 90) return clean;
-            try
-            {
-                string api = "https://tinyurl.com/api-create.php?url=" + Uri.EscapeDataString(clean);
-                string s = HttpGet(api, UA_DESKTOP, 4000).Trim();
-                if (s.StartsWith("http", StringComparison.OrdinalIgnoreCase) && s.Length < clean.Length)
-                    return s;
-            }
-            catch { }
-            return clean;
+            return CleanUrl(url);
         }
 
         private static Dictionary<string, string> ParseQuery(string query)

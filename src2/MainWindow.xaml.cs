@@ -1043,7 +1043,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2839 修重绘卡顿（两个 O(n²)）/ 斜体标签泄漏 / 拖入三段进度条 / 批量清理已完成");
+                log("版本 2840 链接卡改直连真实地址（去 TinyURL 提示页）+ 编辑退出不再丢卡片格式");
                 ApplyMinWindowSize();   // 必须在第一次布局之后（Loaded 里）算，DesiredSize 才有效
             _store = new Store();
                 _store.Load();
@@ -1086,6 +1086,9 @@ namespace TempNotes2
                 };
                 // v2812：网页端在编辑/拖拽时先不重绘，避免同步刷新打断输入。
                 _bridge.OnBusy = SetUiBusy;
+
+                // 一次性把历史卡片里的 TinyURL 短链换回真实地址（TinyURL 会插 deprecated 提示页）
+                try { _bridge.FixDeprecatedShortLinks(); } catch { }
 
                 // v2810：数据是「一条笔记一个文件」，改成实时监听目录，不再只等窗口激活。
                 StartDbWatcher(log);

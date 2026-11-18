@@ -337,8 +337,9 @@ namespace TempNotes
 
             if (string.IsNullOrEmpty(url)) return title;
 
-            // 链接本身就当锚文本：显示的是真实地址，点一下直接跳转。
-            // 用 Markdown 链接而不是 <url> 自动链接，因为 URL 里的 & 会打断后者的正则。
+            // 锚文本就是真实地址（一眼能看出是哪条链接），太长由 CSS 截成一行 + 省略号，
+            // 见 style.css 的 .text.md a。绝不再经第三方短链：TinyURL 会插一个
+            // preview/deprecated 提示页，点开要多等几秒。
             string link = "[" + url + "](" + url + ")";
             if (title.Length == 0) return link;
             return "**" + title.Replace("**", "＊") + "**\n" + link;

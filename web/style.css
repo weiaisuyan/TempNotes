@@ -527,8 +527,15 @@ body.batch .ring{opacity:0;visibility:hidden;pointer-events:none;transform:scale
   font:400 .9em/1.4 Consolas,"Cascadia Mono",ui-monospace,monospace;
   background:color-mix(in srgb,#fff 9%,transparent);
   border-radius:4px;padding:.06em .34em}
-.text.md .md-a{color:var(--accent);text-decoration:none;cursor:pointer;
-  border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+/* 链接卡里的原始地址通常很长：只占一行，超出部分省略号截断。
+   锚文本仍然是真实地址（能看出是哪条链接），点一下直连，不经任何短链。 */
+.text.md .md-a{
+  color:var(--accent);text-decoration:none;cursor:pointer;
+  border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent);
+  display:inline-block;max-width:100%;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  vertical-align:bottom;
+}
 .text.md .md-a:hover{border-bottom-color:var(--accent)}
 /* 预览 / 收起：展开时解除 15 行折叠 */
 .text.md.open{max-height:none}

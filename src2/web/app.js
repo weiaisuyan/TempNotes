@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-18-2839";
+var APPJS_VER = "2026-11-18-2840";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -3396,8 +3396,10 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         send("update|" + id + "|" + encodeURIComponent(nt));
       }
       // 退出编辑都要回到渲染态（提交后 C# 会推一次全量，这一句保证「不提交」也复原）
+      // 注意必须用 display（链接卡的「标题 + 链接」），用 text 会把卡片永久打回原文 ——
+      // 哪怕一个字都没改，点一下编辑再退出格式就没了。
       textEl.classList.add("md");
-      if (n) textEl.innerHTML = mdHtml(n.text);
+      if (n) textEl.innerHTML = mdHtml(n.display || n.text || "");
     };
     textEl.addEventListener("blur", function () { finish(true); }, { once: true });
     textEl.addEventListener("keydown", function (e) {

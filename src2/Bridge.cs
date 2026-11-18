@@ -253,6 +253,10 @@ namespace TempNotes2
                             {
                                 n.Text = Uri.UnescapeDataString(p[2]);
                                 n.DisplayText = "";   // 用户手动编辑后，展示文本回到原文
+                                // 编辑完如果内容仍然满足「标题 + 链接卡」的条件（带 http 链接、
+                                // 不是用户自己写的 markdown 链接、不是超长正文），就重新生成卡片，
+                                // 否则改一个字就永久退化成一大段原文。
+                                TryMakeLinkCard(n);
                                 _store.Touch(n); _store.Save(); PushAll();
                                 // 页面只在「编辑结束（失焦 / Ctrl+Enter）」时发一次 update，
                                 // 所以这里文字为空就是真的清空了 —— 直接判空，不用定时器兜。
@@ -1871,6 +1875,48 @@ namespace TempNotes2
             })
             { IsBackground = true, Name = "TempNotesLink1" };
             t.Start();
+        }
+
+        /// <summary>
+        /// 一次性迁移：把历史卡片里 TinyURL 短链换回原文里的真实地址。
+        /// TinyURL 现在会把老接口生成的短链判成过期，先跳 preview/deprecated 提示页，
+        /// 用户点开要多等几秒。DisplayText 形如 "**标题**\n[锚文本](url)"，
+        /// 真实地址一直在 Text 里，重建一次即可。
+        /// </summary>
+        public void FixDeprecatedShortLinks()
+        {
+            int n = 0;
+            foreach (var note in _store.Db.Notes)
+            {
+                if (note == null) continue;
+                string d = note.DisplayText;
+                if (string.IsNullOrEmpty(d)) continue;
+                if (d.IndexOf("](http", StringComparison.Ordinal) < 0) continue;   // 不是链接卡
+
+                string real = WeChatRecord.FirstUrl(note.Text ?? "");
+                if (string.IsNullOrEmpty(real)) continue;
+                if (real.IndexOf("tinyurl.com", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+                // 已经是「[真实地址](真实地址)」就不用动；否则（TinyURL 短链、
+                // 或者上一版改成域名锚文本的）统一重建。
+                if (d.IndexOf("[" + real + "](" + real + ")", StringComparison.Ordinal) >= 0) continue;
+
+                string title = "";
+                int a = d.IndexOf("**", StringComparison.Ordinal);
+                if (a == 0)
+                {
+                    int b = d.IndexOf("**", 2, StringComparison.Ordinal);
+                    if (b > 2) title = d.Substring(2, b - 2);
+                }
+
+                note.DisplayText = WeChatRecord.BuildCardDisplay(title, real);
+                n++;
+            }
+            if (n > 0)
+            {
+                _store.Save();
+                _log("修正链接卡片 n=" + n);
+            }
         }
 
         /// <summary>塞进单引号 JS 字符串里：转义反斜杠/引号/换行。</summary>
