@@ -1043,7 +1043,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2837 截图识别（百度 OCR）+ 完成动画顺序修正");
+                log("版本 2839 修重绘卡顿（两个 O(n²)）/ 斜体标签泄漏 / 拖入三段进度条 / 批量清理已完成");
                 ApplyMinWindowSize();   // 必须在第一次布局之后（Loaded 里）算，DesiredSize 才有效
             _store = new Store();
                 _store.Load();

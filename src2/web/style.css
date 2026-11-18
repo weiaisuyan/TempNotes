@@ -824,6 +824,50 @@ body:not(.sorting):not(.scrolling) .note.hovering .foot .acts span{opacity:1}   
   transform:translateX(-50%) translateY(0) scale(1);
 }
 
+/* ===== 真实进度条（拖入大文件时用，和 .hint 同一个位置） =====
+   三段：接收（系统交接，无回调 → 滚动条）→ 传输（真实字节数 → 百分比）
+        → 解压建条（真实条数 → 第 N/M 条） */
+#prog{
+  position:fixed;bottom:16px;left:50%;
+  transform:translateX(-50%) translateY(9px) scale(.97);
+  min-width:280px;max-width:min(430px,88vw);
+  background:color-mix(in srgb,var(--card) 92%,#000);
+  border:1px solid var(--line);
+  padding:8px 14px 9px;border-radius:12px;pointer-events:none;
+  opacity:0;
+  transition:opacity .3s ease,transform .3s cubic-bezier(.22,1,.36,1);
+  z-index:62;
+}
+#prog.show{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}
+#prog .pgt{
+  font-size:11.5px;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+#prog .pgs{
+  font-size:10.5px;color:var(--muted);margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums;
+}
+#prog .pgb{
+  margin-top:7px;height:4px;border-radius:999px;overflow:hidden;position:relative;
+  background:color-mix(in srgb,var(--text) 14%,transparent);
+}
+#prog .pgb i{
+  display:block;height:100%;width:0;border-radius:999px;
+  background:var(--accent);
+  transition:width .18s linear;
+}
+/* 无进度可报时用横扫条：transform 动画走合成层，主线程被系统卡住时也照样在动 */
+#prog.ind .pgb i{
+  width:40% !important;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  animation:progSweep 1.15s linear infinite;
+}
+@keyframes progSweep{
+  from{transform:translateX(-100%)}
+  to{transform:translateX(350%)}
+}
+
 .batchbar{
   /* 批量编辑时顶掉输入框：同一位置、同一条基线，列表不会跳 */
   position:absolute;left:8px;right:8px;top:6px;height:48px;

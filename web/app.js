@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-18-2837";
+var APPJS_VER = "2026-11-18-2839";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -155,6 +155,66 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c];
     });
   }
+
+  /* ---------- 真实进度条（和 .hint 同一个位置） ----------
+     拖入大文件时，用户唯一想知道的是「还在处理吗、到哪了」。
+     能拿到真实数字的地方就给真实数字，拿不到的地方给「在处理中」的横扫条：
+       · 系统把文件交给页面（微信聊天记录几百 MB）→ 无回调，横扫条
+       · 页面分片上传 → 真实字节数，百分比
+       · C# 解压 + 建待办 → 真实条数，第 N/M 条 */
+  var _progEl = null, _progHideTimer = 0;
+  function progEnsure() {
+    if (_progEl && _progEl.parentNode) return _progEl;
+    _progEl = document.createElement("div");
+    _progEl.id = "prog";
+    _progEl.innerHTML = '<div class="pgt"></div><div class="pgs"></div>' +
+                        '<div class="pgb"><i></i></div>';
+    document.body.appendChild(_progEl);
+    return _progEl;
+  }
+  function progShow(title, sub, pct) {
+    try {
+      var el = progEnsure();
+      el.querySelector(".pgt").textContent = title || "";
+      el.querySelector(".pgs").textContent = sub || "";
+      var bar = el.querySelector(".pgb i");
+      if (pct == null) {
+        el.classList.add("ind");
+      } else {
+        el.classList.remove("ind");
+        bar.style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + "%";
+      }
+      el.classList.add("show");
+      clearTimeout(_progHideTimer);
+    } catch (e) { }
+  }
+  function progHide(delay) {
+    clearTimeout(_progHideTimer);
+    _progHideTimer = setTimeout(function () {
+      if (_progEl) _progEl.classList.remove("show");
+    }, delay == null ? 800 : delay);
+  }
+  function fmtMB(bytes) {
+    if (!bytes) return "0 MB";
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + " GB";
+    return (bytes / 1048576).toFixed(bytes >= 10485760 ? 0 : 1) + " MB";
+  }
+
+  /* 页面里任何未捕获异常都写进 bridge.log（以前是纯静默：卡片灰了不动、
+     整个列表不再刷新，日志里一个字都没有，只能靠重启恢复）。 */
+  function logJsError(where, e) {
+    try {
+      var msg = (e && (e.message || e)) + "";
+      var st = (e && e.stack) ? String(e.stack).split("\n").slice(0, 3).join(" | ") : "";
+      send("dbg|JS 异常 @" + where + " : " + msg.slice(0, 200) + (st ? (" || " + st.slice(0, 300)) : ""));
+    } catch (e2) { }
+  }
+  window.addEventListener("error", function (ev) {
+    logJsError("window.onerror", ev && (ev.error || ev.message));
+  });
+  window.addEventListener("unhandledrejection", function (ev) {
+    logJsError("promise", ev && ev.reason);
+  });
   function fmtTime(ms) {
     if (!ms) return "";
     var d = new Date(ms);
@@ -272,17 +332,75 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
       return keep('<code class="md-inline">' + c + "</code>");
     });
 
+    /* URL 先抠出来存着，强调规则跑完再放回去。
+       以前 `_..._` 会把 URL 里的下划线当斜体标记：既吃掉下划线，
+       又会把 <i> 塞进 [标题](url) 的 url 里 → 属性被写坏 + 标签不成对，
+       不成对的 <i> 会被浏览器跨元素重开，把后面所有卡片的正文和附件全包进斜体。
+       实测一次能泄漏出几十个 <i>，附件块因此被挤成行内宽度、缩略图跑到卡片外。 */
     function inline(x) {
-      return x
+      var urls = [];
+      x = x.replace(/https?:\/\/[^\s"'<>)\]]+/g, function (m) {
+        var tail = "";
+        var mt = /[.,;:!?。，；：！？]+$/.exec(m);
+        if (mt) { tail = mt[0]; m = m.slice(0, m.length - tail.length); }
+        var k = "\u0001" + urls.length + "\u0001";
+        urls.push(m);
+        return k + tail;
+      });
+
+      x = x
         .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
-        .replace(/__([^_\n]+)__/g, "<b>$1</b>")
+        /* 下划线强调只认「两侧是空白/标点」的写法：
+           文件名 img_v3_0217h_…、URL 里的 __biz=… 都不该变成斜体 */
+        .replace(/(^|[\s(\[{（【《:：,，。、;；!！?？])__([^_\n]+)__(?=$|[\s)\]{}）】》:：,，。、;；!！?？])/g,
+          "$1<b>$2</b>")
         .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
-        .replace(/(^|[^_])_([^_\n]+)_/g, "$1<i>$2</i>")
-        .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
+        .replace(/(^|[\s(\[{（【《:：,，。、;；!！?？])_([^_\n]+)_(?=$|[\s)\]{}）】》:：,，。、;；!！?？])/g,
+          "$1<i>$2</i>")
+        .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+
+      x = x.replace(/\u0001(\d+)\u0001/g, function (m, i) { return urls[+i]; });
+
+      return x
         .replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g,
           '<a class="md-a" data-href="$1" title="$1">$1</a>')
         .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
           '<a class="md-a" data-href="$2" title="$2">$1</a>');
+    }
+
+    /* 保险：强调标签必须成对。多出来的闭合标签丢掉，没闭合的开标签删掉。
+       只要有半个标签漏进 innerHTML，浏览器就会跨元素重开它，
+       一张卡片的斜体就能污染整屏（附件被包进行内上下文 → 缩略图跑位）。 */
+    function balanceEmph(html) {
+      var stack = [], out = "", last = 0, m;
+      var re = /<(\/?)(i|b|del)>/g;
+      while ((m = re.exec(html)) !== null) {
+        out += html.slice(last, m.index);
+        last = re.lastIndex;
+        if (!m[1]) {
+          stack.push({ tag: m[2], pos: out.length });
+          out += m[0];
+        } else {
+          var k = -1;
+          for (var j = stack.length - 1; j >= 0; j--) {
+            if (stack[j].tag === m[2]) { k = j; break; }
+          }
+          if (k < 0) continue;          // 多余的闭合标签：丢掉
+          stack.length = k;             // 同时闭合它后面的嵌套
+          out += m[0];
+        }
+      }
+      out += html.slice(last);
+      if (stack.length) {
+        var res = "", p = 0;
+        for (var q = 0; q < stack.length; q++) {
+          res += out.slice(p, stack[q].pos);
+          p = stack[q].pos + ("<" + stack[q].tag + ">").length;
+        }
+        res += out.slice(p);
+        out = res;
+      }
+      return out;
     }
 
     var lines = s.split("\n");
@@ -439,7 +557,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
 
     var html = out.join("");
     html = html.replace(/\u0000(\d+)\u0000/g, function (m, idx) { return stash[+idx] || ""; });
-    return html;
+    return balanceEmph(html);
   }
 
   function hlText(t, q) {
@@ -1576,7 +1694,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   function attHtml(a) {
     var inner;
     if (a.thumb) {
-      inner = '<img class="thumb" draggable="false" src="' + esc(a.thumb) + '" alt="">';
+      inner = '<img class="thumb" draggable="false" src="' + esc(a.thumb) + '" alt="" ' +
+              'onerror="try{window.__needThumb&&window.__needThumb(this)}catch(e){}">';
       if (a.kind === "video") inner += '<span class="play">' + SVG_PLAY + '</span>';
       return '<div class="att has-thumb" data-att="' + esc(a.id) + '" data-kind="' + esc(a.kind || "file") + '" title="' + esc(a.name) + '">' +
              inner + attNameHtml(a.name) +
@@ -1588,10 +1707,42 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     else if (a.kind === "image") inner = '<span class="ico">' + SVG_IMAGE + '</span>';
     else inner = '<span class="ico">' + SVG_DOC + '</span>';
 
-    return '<div class="att" data-att="' + esc(a.id) + '" data-kind="' + esc(a.kind || "file") + '" title="' + esc(a.name) + '">' +
+    return '<div class="att"' + (a.kind === "image" || a.kind === "video" ? ' data-needthumb="1"' : '') +
+           ' data-att="' + esc(a.id) + '" data-kind="' + esc(a.kind || "file") + '" title="' + esc(a.name) + '">' +
            '<div class="thumbbox">' + inner + '</div>' +
            attNameHtml(a.name) +
            '<div class="x" data-act="delatt">' + SVG_X + '</div></div>';
+  }
+
+  /* 缩略图自愈：后台生成完成和全量推送经常撞车（DTO 里 thumb 是空的那一刻正好在生成），
+     结果卡片永久停在类型图标上。这里补一条兜底：缺图就向 C# 要一次，
+     img 加载失败（文件刚被清、URL 过期）也走同一条。每个附件每次运行只问一次。 */
+  var _thumbAsked = {};
+  function askThumb(ids) {
+    if (!ids || !ids.length) return;
+    var want = [];
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      if (!id || _thumbAsked[id]) continue;
+      _thumbAsked[id] = 1;
+      want.push(id);
+    }
+    if (want.length) { try { send("thumbneed|" + want.join(",")); } catch (e) { } }
+  }
+  window.__needThumb = function (img) {
+    try {
+      var a = img && img.closest ? img.closest(".att") : null;
+      if (a) askThumb([a.getAttribute("data-att")]);
+    } catch (e) { }
+  };
+  function askMissingThumbs() {
+    if (!listEl) return;
+    var ids = [];
+    listEl.querySelectorAll('.att[data-needthumb="1"]').forEach(function (a) {
+      var id = a.getAttribute("data-att");
+      if (id) ids.push(id);
+    });
+    askThumb(ids);
   }
 
   function reportOneAtt(el) {
@@ -1624,6 +1775,8 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   var _dropTargetEl = null;
   var _lastDragOverAt = 0;
   var _dragFileCount = 1;
+  var _dragHintShown = false;   // 一轮拖拽只提示一次「松开后开始导入」
+  var _upCount = 0, _upFinished = 0;   // 这一批拖入几个文件、已完成几个（进度条阶段 2→3）
 var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还是文字/链接
   var _topScrollRaf = 0;
   var _wheelTarget = 0;      // 热区转发的滚轮：累计目标位置
@@ -2208,6 +2361,10 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     if (animate) {
       _flipPrev = {};
       listEl.querySelectorAll(".note").forEach(function (c) {
+        // 先把还在跑的 FLIP 动画停掉再量位置。
+        // getBoundingClientRect 会把 transform 算进去：动画没跑完时量到的是「视觉位置」，
+        // 下一轮 FLIP 就按这个错误基准算位移，连续快速切换时会一直把卡片按在原地。
+        try { c.getAnimations().forEach(function (a) { a.cancel(); }); } catch (eA) { }
         var ab = c.querySelector(".atts");
         _flipPrev[c.getAttribute("data-id")] = {
           top: c.getBoundingClientRect().top,
@@ -2221,6 +2378,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     // 未完成 / 已完成拆成两个独立容器：两个 SortableJS 实例 group 互不相通，
     // 拖动时根本过不去（单列表 + onMove 在 forceFallback 下拦不住，实测仍会插入）。
     var cardHtml = function (n) {
+      try {
       var done = n.status === 1;
       var cc = normColor(n.color);
       var tname = cc ? labelOf(cc) : "";
@@ -2258,6 +2416,23 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
                  '</div>' +
                '</div>' +
              '</div>';
+      } catch (eC) {
+        // 一条坏数据不能拖垮整张列表：以前这里一抛，render() 在写 innerHTML 之前就断了，
+        // 页面停在旧状态（本地已置灰的卡不下移），只能重启恢复。
+        logJsError("cardHtml " + (n && n.id), eC);
+        var safeId = esc(n && n.id);
+        var safeTxt = esc(String((n && (n.display || n.text)) || "").slice(0, 500));
+        return '<div class="note" data-id="' + safeId + '" data-done="0">' +
+               '<div class="bar" data-act="color"></div>' +
+               '<div class="ring" data-act="toggle"></div>' +
+               '<div class="chk" data-act="check"></div>' +
+               '<div class="body"><div class="text" data-act="text">' + safeTxt + '</div>' +
+               '<div class="foot"><span class="upd"></span><div class="acts">' +
+               '<span class="made"></span>' +
+               '<span class="exp" data-act="expand" style="display:none">预览</span>' +
+               '<span data-act="edit">编辑</span>' +
+               '<span class="del" data-act="delete">删除</span></div></div></div></div>';
+      }
     };
 
     // 三个独立容器：置顶 / 待办 / 已完成。每个 zone 一个 Sortable 实例、group 名字不同，
@@ -2266,14 +2441,14 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     var todoArr = arr.filter(function (n) { return n.status !== 1 && !n.pinned; });
     var doneArr = arr.filter(function (n) { return n.status === 1; });
 
-    listEl.innerHTML =
-      (pinArr.length
+    var _h = (pinArr.length
         ? '<div class="zone zone-pin" data-zone="pin">' + pinArr.map(cardHtml).join("") + '</div>'
         : '') +
       '<div class="zone" data-zone="todo">' + todoArr.map(cardHtml).join("") + '</div>' +
       (doneArr.length
         ? '<div class="zone zone-done" data-zone="done">' + doneArr.map(cardHtml).join("") + '</div>'
         : '');
+    listEl.innerHTML = _h;
 
     var old = document.querySelector(".empty");
     if (old) old.remove();
@@ -2303,6 +2478,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     bind();
     initSortable();
     reportAllAtts(true);
+    try { askMissingThumbs(); } catch (eT) { }
     updateTopButton();
 
     if (query) {
@@ -2347,25 +2523,32 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     }
 
     if (_flipPrev && !boxAnim) {
+      // 两遍走：先只读所有新位置，再统一建动画。
+      // 以前是「读 rect → animate() → 读 rect → animate()…」，
+      // animate 会让布局失效，下一次读又强制整篇重排，130 张卡就是 130 次全量重排，
+      // 实测这一段独占 570ms（新建一条待办时下面所有卡都要位移，所以特别明显）。
+      var moves = [];
+      var _wr = wrapEl ? wrapEl.getBoundingClientRect() : null;
       listEl.querySelectorAll(".note").forEach(function (c) {
         var oldTop = _flipPrev[c.getAttribute("data-id")];
         if (!oldTop) return;
-        var d = oldTop.top - c.getBoundingClientRect().top;
+        var r = c.getBoundingClientRect();                    // 只读
+        var d = oldTop.top - r.top;
         if (Math.abs(d) < 1) return;
+        // 屏幕外的卡片动画看不见，白建 100 多个 animation（新建一条时下面全都要位移）。
+        // 只给可视区上下各留一屏的卡片建动画。
+        if (_wr && (r.bottom < _wr.top - 400 || r.top > _wr.bottom + 400)) return;
+        moves.push({ el: c, d: d });
+      });
+      for (var mi = 0; mi < moves.length; mi++) {             // 再统一写
+        var m = moves[mi];
+        var dist = Math.abs(m.d);
+        var dur = Math.round(Math.max(420, Math.min(1200, 300 + dist * 0.55)));
         try {
-          // 跨区移动（待办 ⇄ 已完成、置顶 ⇄ 待办）的「飞过去」动画。
-          // 2026-11-10 用户反馈：两个方向都「太快」。原因是固定 620ms + easeOutQuad
-          //（起步即最高速），距离一远（比如从待办区顶部飞到已完成区底部，上千像素）
-          // 前 100ms 就跑掉一大半路程，看着像瞬移。
-          // 改法：①时长随距离增长（420~1200ms），近处不变慢、远处不瞬移；
-          //       ②缓动换成 ease-in-out 一类（cubic-bezier(.45,0,.25,1)），
-          //         起步和收尾都慢，中间最快——两头都不突兀。
-          var dist = Math.abs(d);
-          var dur = Math.round(Math.max(420, Math.min(1200, 300 + dist * 0.55)));
-          c.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }],
+          m.el.animate([{ transform: "translateY(" + m.d + "px)" }, { transform: "none" }],
             { duration: dur, easing: "cubic-bezier(.45,0,.25,1)" });
         } catch (e) { }
-      });
+      }
     }
     _flipPrev = null;
     syncScrollbarGutter();
@@ -2404,13 +2587,15 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
      只隔一个动画帧（约 16ms），既不会「没打勾就掉下去」，也不会「打完勾干等」。 */
   var _togglePending = {};
   function toggleWithAnim(id) {
-    if (_togglePending[id]) return;
+    // 带时间戳：万一 rAF 回调没跑到（窗口被遮挡时浏览器会冻结 rAF），
+    // 这张卡也不会被永久锁住点不动。
+    if (_togglePending[id] && Date.now() - _togglePending[id] < 1500) return;
     var card = listEl.querySelector('.note[data-id="' + id + '"]');
     var n = find(id);
     if (!card || !n) { send("toggle|" + id); return; }
 
     var goingDone = n.status !== 1;
-    _togglePending[id] = true;
+    _togglePending[id] = Date.now();
     var ring = card.querySelector(".ring");
     if (ring) ring.classList.toggle("on", goingDone);
     card.classList.toggle("done", goingDone);
@@ -2999,9 +3184,45 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     syncExpand(card);
   }
 
+  /* 全量同步「预览/收起」按钮。
+     注意：textOverflows 读 scrollHeight 会强制整篇重新布局，
+     以前是「逐张 写 class → 读 scrollHeight → 写 style」，
+     读写交替 = 每张卡都把 100 多条卡重排一遍，O(n²)，
+     实测 133 条时这一段独占 800ms。现在拆成两遍：先读完，再统一写。 */
   function syncAllExpand() {
     if (!listEl) return;
-    listEl.querySelectorAll(".note").forEach(function (c) { syncExpand(c); });
+    var cards = listEl.querySelectorAll(".note");
+    var plan = [], i, j;
+    for (i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var id = card.getAttribute("data-id");
+      var textEl = card.querySelector("[data-act='text']");
+      var btn = card.querySelector("[data-act='expand']");
+      if (!textEl || !btn) continue;
+      var clipped = isClipped(find(id));
+      var open = !!_expanded[id];
+      plan.push({
+        textEl: textEl, btn: btn, clipped: clipped, open: open,
+        over: (clipped || open) ? true : textOverflows(textEl),
+        chars: (function () {
+          var n0 = find(id);
+          return n0 ? String(n0.display || n0.text || "").length : 0;
+        })()
+      });
+    }
+    for (j = 0; j < plan.length; j++) {
+      var p = plan[j];
+      if (p.clipped) {
+        p.textEl.classList.remove("open");
+        p.btn.style.display = "";
+        p.btn.textContent = "预览（" + fmtChars(p.chars) + " 字）";
+        continue;
+      }
+      p.textEl.classList.toggle("open", p.open);
+      p.btn.style.display = p.over ? "" : "none";
+      p.btn.textContent = p.open ? "收起"
+        : (p.over && p.chars ? "预览（" + fmtChars(p.chars) + " 字）" : "预览");
+    }
   }
 
   /* ---------- 大文本查看器（v2835） ----------
@@ -3405,6 +3626,12 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
   on("batchTodo", function () { doBatch("todo"); });
   on("batchDone", function () { doBatch("done"); });
   on("batchDel", function () { doBatch("delete"); });
+  /* 清理：不需要勾选，直接把「已完成」里的全部移进回收站（回收站里还能单条恢复） */
+  on("batchClean", function () {
+    send("batch|clean|");
+    enterBatch(false);
+    batchSel = {}; render();
+  });
   on("batchAll", function () {
     var all = visibleNotes();
     var allOn = Object.keys(batchSel).length < all.length;
@@ -3583,7 +3810,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         if (!_prevNoteIds[notes[i].id]) fresh.push(notes[i]);
       }
 
-      render(true);
+      try { render(true); } catch (eR) { logJsError("setNotes/render", eR); }
       if (wrapEl) wrapEl.scrollTop = keep;
       try { warmHaystacks(notes); } catch (e0) { }
 
@@ -3620,6 +3847,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         _dropNewPending = false;
         animateScrollTo(0, null);
         if (fresh.length) flashNote(fresh[0].id);
+        progHide(500);              // 新卡片已经落位，进度条收掉
       } else if (_dropFlashId) {
         var fid = _dropFlashId;
         _dropFlashId = null;
@@ -3763,6 +3991,22 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
       } catch (e) { return false; }
     },
     /* 缩略图在后台生成完成后只替换这一个附件，不整页重渲染。 */
+    /* 拖入分阶段进度：C# 解压 / 建待办时逐条回报，页面据此显示真实阶段 */
+    progStage: function (stage, cur, total, text) {
+      try {
+        if (stage === 1) {
+          progShow("① 正在接收文件", text || "系统正在把文件交给随记，大聊天记录可能要 1～2 分钟", null);
+        } else if (stage === 2) {
+          progShow("② 正在传输", text || "", (total ? (cur / total * 100) : null));
+        } else if (stage === 3) {
+          progShow("③ 正在解压并建立待办",
+            text || ("第 " + cur + " / " + total + " 条"),
+            (total ? (cur / total * 100) : null));
+        } else if (stage === 0) {
+          progHide(200);
+        }
+      } catch (e) { }
+    },
     setAttThumb: function (id, url) {
       try {
         var el = document.querySelector('.att[data-att="' + id + '"]');
@@ -4902,7 +5146,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
       cleanupDropUi();
     }, 3500);
   }
-  function cleanupDropUi() { clearDropWatch(); extEnd(true); }
+  function cleanupDropUi() { _dragHintShown = false; clearDropWatch(); extEnd(true); }
 
   // 拖拽时 dragover 是 60~120Hz，重活（elementFromPoint + FLIP）必须每帧最多一次
   var _dragPt = null, _dragRaf = 0;
@@ -4951,6 +5195,14 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         _dragFileCount = 1;
       }
     } catch (e12) { }
+    // 拖进来的如果是文件，先在拖动阶段就说一句：大聊天记录（几百 MB）松手后
+    // 系统要等微信把数据吐完，中间界面会静默几十秒到几分钟，不说一句像死机。
+    try {
+      if (_dragKind === "file" && !_dragHintShown) {
+        _dragHintShown = true;
+        progShow("① 正在接收文件", "松开鼠标后开始导入", null);
+      }
+    } catch (eH2) { }
     extBegin();
     _dragPt = { x: e.clientX, y: e.clientY };
     // 拖到列表上下沿就自己滚（不然这一屏以外的待办根本放不进去）
@@ -5000,7 +5252,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
      浏览器不给本地路径，大文件也不能整块 base64。这里按 2MB 切片顺序送到 C#，
      C# 收到哪片写哪片，收完再搬进 blobs 建附件。
      上传卡就长在刚才那个虚线占位槽的位置：进度环 → 完成 → 失败，全在原地表达。 */
-  var UP_CHUNK = 2 * 1024 * 1024;
+  var UP_CHUNK = 8 * 1024 * 1024;   // 8MB：微信聊天记录动辄几百 MB，2MB 一片要几百次往返
   var RING_R = 15;
   var RING_C = 2 * Math.PI * RING_R;
   var _uploads = {};          // token → { tile, name, size, done }
@@ -5025,10 +5277,28 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
   function upProgress(token, p) {
     var st = _uploads[token];
     if (!st || st.done) return;
+    st.prog = p;
     var fg = st.tile.querySelector(".fg");
     var pc = st.tile.querySelector(".pc");
     if (fg) fg.setAttribute("stroke-dashoffset", (RING_C * (1 - p)).toFixed(2));
     if (pc) pc.textContent = Math.min(99, Math.round(p * 100)) + "%";
+    try { progUpdateUploads(); } catch (e) { }
+  }
+
+  /* 汇总所有分片的真实字节数 → 进度条上的百分比 */
+  function progUpdateUploads() {
+    var total = 0, done = 0, cur = "";
+    for (var k in _uploads) {
+      var u = _uploads[k];
+      if (!u) continue;
+      total += u.size || 0;
+      done += (u.size || 0) * (u.done ? 1 : (u.prog || 0));
+      if (!u.done) cur = u.name || cur;
+    }
+    if (!total) return;
+    var pct = done / total * 100;
+    progShow("② 正在传输",
+      fmtMB(done) + " / " + fmtMB(total) + (cur ? ("   " + cur) : ""), pct);
   }
 
   function shelfAdd(tiles) {
@@ -5071,6 +5341,12 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
       });
     }
     shelfIdle();
+    _upFinished++;
+    if (_upCount > 0 && _upFinished >= _upCount) {
+      // 传完了，接下来是 C# 解压 + 建待办：真实条数由 C# 的 progStage(3,…) 逐条回报
+      progShow("③ 正在解压并建立待办", "共 " + _upCount + " 个文件", null);
+      _upCount = 0; _upFinished = 0;
+    }
   }
 
   function startUpload(file, targetId, tile) {
@@ -5147,10 +5423,19 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     } catch (err) { }
 
     var files = [];
+    // 微信聊天记录这类「虚拟文件」在取 dt.files 时，系统要等来源程序把几百 MB 吐完，
+    // 这一步会把主线程卡住几十秒到几分钟，期间界面毫无反应。
+    // 先把提示画出来，让用户知道松手已经被接收了。
+    try {
+      if (dt.types && Array.prototype.indexOf.call(dt.types, "Files") >= 0) {
+        progShow("① 正在接收文件", "系统正在把文件交给随记…", null);
+      }
+    } catch (eH) { }
     try { files = Array.prototype.slice.call(dt.files || []); } catch (e14) { }
 
     /* ---------- 拖进来的是文字 / 链接（没有文件） ---------- */
     if (!files.length) {
+      progHide(0);                       // 不是文件：进度条立刻收掉，走原来的文字/链接逻辑
       var text = extractDropText(dt);
       cleanupDropUi();
       if (!text) {
@@ -5200,6 +5485,10 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     else _dropFlashId = target;
 
     // 先说这一批有几个：C# 收齐之前不重渲染，否则同批没传完的卡片会被冲掉
+    var _bt = 0;
+    for (var bi = 0; bi < files.length; bi++) _bt += (files[bi].size || 0);
+    _upCount = files.length; _upFinished = 0;
+    progShow("② 正在传输", "0 MB / " + fmtMB(_bt), 0);
     try { send("upbatch|" + files.length); } catch (e11) { }
     for (var j = 0; j < files.length; j++) startUpload(files[j], target, tiles[j]);
   });

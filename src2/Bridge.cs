@@ -30,6 +30,7 @@ namespace TempNotes2
         private readonly Action<string> _log;
         private readonly BlockingCollection<Attachment> _thumbQueue = new BlockingCollection<Attachment>();
         private readonly HashSet<string> _thumbQueued = new HashSet<string>();
+        private readonly Dictionary<string, int> _thumbTries = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private readonly object _thumbLock = new object();
 
         /// <summary>
@@ -198,10 +199,15 @@ namespace TempNotes2
                         // add|<urlencoded 文本>[|<#RRGGBB 颜色>] —— 用 encodeURIComponent，文本里的 | 与换行都能过。
                         // 第三段是「新建时继承的颜色」：正在按某个优先级筛选时按 Enter，新卡片直接带上那个颜色，
                         // 否则刚加的一条会立刻被筛到视图外，看起来像没加上。
-                        _store.AddNote(p.Length > 1 ? Uri.UnescapeDataString(p[1]) : "",
-                                       p.Length > 2 ? p[2] : "");
-                        _store.SaveAfterPrune();      // 空文本不该留下空卡片
-                        PushAll();
+                        {
+                            string addText = p.Length > 1 ? Uri.UnescapeDataString(p[1]) : "";
+                            Note added = _store.AddNote(addText, p.Length > 2 ? p[2] : "");
+                            // 单条拖入的分享文本（抖音/公众号等）：当场拆成「标题 + 可点链接卡」，
+                            // 和微信批量那条路一致；网络补标题放后台，不挡拖入。
+                            TryMakeLinkCard(added);
+                            _store.SaveAfterPrune();      // 空文本不该留下空卡片
+                            PushAll();
+                        }
                         break;
 
                     case "dropempty":
@@ -316,9 +322,18 @@ namespace TempNotes2
                         if (p.Length > 1) CopyAttachmentsToClipboard(p[1]);
                         break;
 
-                    case "batch":
-                        // batch|op|id1,id2,…   op = done|todo|delete
-                        if (p.Length > 2) BatchOp(p[1], p[2]);
+                    case "thumbneed":
+                        // thumbneed|id1,id2… —— 页面发现附件缺缩略图（或 img 加载失败）时补一次
+                        if (p.Length > 1)
+                        {
+                            foreach (var tid in p[1].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                                RequeueThumb(tid);
+                        }
+                        break;
+
+                    case "batch":                        // batch|op|id1,id2,…   op = done|todo|delete|clean
+                        // clean 不需要 id：把「已完成」里的全部移进回收站
+                        if (p.Length > 1) BatchOp(p[1], p.Length > 2 ? p[2] : "");
                         break;
 
                     case "pick":
@@ -1002,16 +1017,39 @@ namespace TempNotes2
 
         private void BatchOp(string op, string idsCsv)
         {
+            // 清理：把「已完成」里的全部移进回收站（不是永久删除，回收站里能单条恢复）
+            if (op == "clean")
+            {
+                int cleaned = 0;
+                foreach (var x in _store.Db.Notes)
+                {
+                    if (x == null || x.Status != 1) continue;
+                    _store.SetStatusQuiet(x, 2);
+                    cleaned++;
+                }
+                if (cleaned > 0) _store.Save();
+                PushAll();
+                PushTrash();
+                Hint(cleaned > 0 ? ("已清理 " + cleaned + " 条到回收站") : "已完成里没有可清理的");
+                _log("批量清理已完成 n=" + cleaned);
+                return;
+            }
+
+            int target = op == "done" ? 1 : op == "todo" ? 0 : op == "delete" ? 2 : -1;
+            if (target < 0) return;
+
             var ids = idsCsv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            int changed = 0;
             foreach (var id in ids)
             {
                 var n = Find(id);
                 if (n == null) continue;
-                if (op == "done") _store.SetStatus(n, 1);
-                else if (op == "todo") _store.SetStatus(n, 0);
-                else if (op == "delete") _store.SetStatus(n, 2);
+                if (n.Status == target) continue;     // 已经是目标状态：别白改 UpdatedAt
+                _store.SetStatusQuiet(n, target);
+                changed++;
             }
-            _store.Save();
+            // 只有真的改了才落盘：一次全量存盘，而不是每条一次
+            if (changed > 0) _store.Save();
             PushAll();
         }
 
@@ -1419,6 +1457,7 @@ namespace TempNotes2
                     UpBatchStep();
                     Hint("微信这次没有导出内容，请重新多选后再拖");
                     _log("微信聊天记录空包，已忽略");
+                    try { _eval("window.api.progStage&&window.api.progStage(0);"); } catch { }
                     return;
                 }
 
@@ -1594,6 +1633,9 @@ namespace TempNotes2
 
             try
             {
+                // 阶段③：解压 + 逐条建待办。解压本身没有回调，先给「在处理」，
+                // 之后每建几条回报一次真实条数。
+                try { _eval("window.api.progStage&&window.api.progStage(3,0,0,'正在解压聊天记录…');"); } catch { }
                 long maxSort = 0;
                 foreach (var x in _store.Db.Notes)
                 {
@@ -1622,6 +1664,21 @@ namespace TempNotes2
                     note.Sort = maxSort + (messages.Count - i);
                     _store.Db.Notes.Add(note);
                     pending.Add(new KeyValuePair<string, WeChatRecord.Message>(note.Id, messages[i]));
+
+                    // 真实条数回报（每 1/40 一次，最多 40 次，避免刷爆）
+                    if (messages.Count > 1)
+                    {
+                        int step = Math.Max(1, messages.Count / 40);
+                        if (i % step == 0 || i == messages.Count - 1)
+                        {
+                            try
+                            {
+                                _eval("window.api.progStage&&window.api.progStage(3," +
+                                      (i + 1) + "," + messages.Count + ");");
+                            }
+                            catch { }
+                        }
+                    }
 
                     // 图片/视频/文件：搬进这条笔记自己的 blobs 目录，挂成附件。
                     // 以前只把 "[图片] xxx.jpg" 当纯文本，用户看到的只有文件名，内容全丢了。
@@ -1749,6 +1806,73 @@ namespace TempNotes2
             t.Start();
         }
 
+        /// <summary>
+        /// 单条拖入的分享文本 → 「标题 + 可点链接」卡片。
+        /// 和微信聊天记录批量那条路复用同一套解析，只是不需要先拆条。
+        /// 只处理「文本里带 http(s) 链接」的情况；纯文字待办原样不动。
+        /// </summary>
+        private void TryMakeLinkCard(Note n)
+        {
+            if (n == null) return;
+            string raw = n.Text ?? "";
+            if (raw.Length == 0) return;
+            // 用户自己写的 markdown 链接 / 长正文：别覆盖成卡片
+            if (raw.IndexOf("](http", StringComparison.OrdinalIgnoreCase) >= 0) return;
+            if (raw.Length > 600) return;
+
+            string url = WeChatRecord.FirstUrl(raw);
+            if (string.IsNullOrEmpty(url)) return;
+
+            int at = raw.IndexOf(url, StringComparison.Ordinal);
+            string before = at > 0 ? raw.Substring(0, at) : "";
+            string title = WeChatRecord.CleanShareTitle(before, url);
+            if (string.IsNullOrEmpty(title)) title = url;
+
+            // 先本地出卡片（不联网），保证拖入当场就是「标题 + 链接」
+            n.DisplayText = WeChatRecord.BuildCardDisplay(title, url);
+            QueueLinkEnrich(n.Id, url, title);
+        }
+
+        /// <summary>后台把标题补全（短链跳转 / 网页 title / 各家 oembed），只改这一张卡。</summary>
+        private void QueueLinkEnrich(string noteId, string url, string seed)
+        {
+            if (string.IsNullOrEmpty(noteId) || string.IsNullOrEmpty(url)) return;
+            var t = new Thread(() =>
+            {
+                string display = null;
+                try
+                {
+                    var e = LinkResolver.EnrichUrl(url, seed);
+                    if (e != null) display = WeChatRecord.BuildCardDisplay(e.Title, e.Url);
+                }
+                catch (Exception ex) { _log("单条链接解析失败 " + ex.Message); }
+                if (string.IsNullOrEmpty(display)) return;
+
+                Action apply = () =>
+                {
+                    Note note = Find(noteId);
+                    if (note == null) return;                       // 已经被删掉了，别复活
+                    if (string.IsNullOrEmpty(note.DisplayText)) return;   // 用户手动改过原文
+                    if (note.DisplayText == display) return;
+                    note.DisplayText = display;
+                    _store.Save();                                  // 落盘一次，不推全量
+                    try
+                    {
+                        _eval("window.api.setNoteDisplay&&window.api.setNoteDisplay('" +
+                              Js(note.Id) + "'," + JsonStr(display) + ");");
+                    }
+                    catch { }
+                    _log("单条链接标题补全 " + url);
+                };
+
+                var ui = OnUiThread;
+                if (ui != null) { try { ui(apply); } catch { } }
+                else { try { apply(); } catch { } }
+            })
+            { IsBackground = true, Name = "TempNotesLink1" };
+            t.Start();
+        }
+
         /// <summary>塞进单引号 JS 字符串里：转义反斜杠/引号/换行。</summary>
         private static string Js(string s)
         {
@@ -1796,6 +1920,34 @@ namespace TempNotes2
         /// 缩略图后台队列：解码大图、取视频首帧都可能上百毫秒，
         /// 不能占着 WPF UI 线程。串行执行，避免多张图同时抢 CPU。
         /// </summary>
+        /// <summary>
+        /// 页面报告某个附件缺缩略图（生成和全量推送撞车、或缩略图文件丢了）时补一次。
+        /// 每个附件每次运行最多补 2 次，避免坏图无限重试。
+        /// </summary>
+        private void RequeueThumb(string attId)
+        {
+            if (string.IsNullOrEmpty(attId)) return;
+            Attachment att = null;
+            foreach (var n in _store.Db.Notes)
+            {
+                if (n == null || n.Attachments == null) continue;
+                att = n.Attachments.FirstOrDefault(x => x != null && x.Id == attId);
+                if (att != null) break;
+            }
+            if (att == null) return;
+            if (att.Kind != "image" && att.Kind != "video") return;
+
+            int tries;
+            lock (_thumbTries) { _thumbTries.TryGetValue(attId, out tries); }
+            if (tries >= 2) return;
+            lock (_thumbTries) { _thumbTries[attId] = tries + 1; }
+
+            try { string old = ThumbPathV2(att); if (File.Exists(old)) File.Delete(old); } catch { }
+            lock (_thumbLock) { _thumbQueued.Remove(attId); }
+            QueueThumb(att);
+            _log("补缩略图 " + (att.OrigName ?? "") + " 第" + (tries + 1) + "次");
+        }
+
         private void QueueThumb(Attachment source)
         {
             if (source == null || string.IsNullOrEmpty(source.Id)) return;

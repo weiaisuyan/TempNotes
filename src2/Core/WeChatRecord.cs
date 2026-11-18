@@ -344,7 +344,7 @@ namespace TempNotes
             return "**" + title.Replace("**", "＊") + "**\n" + link;
         }
 
-        private static string CleanShareTitle(string before, string url)
+        internal static string CleanShareTitle(string before, string url)
         {
             before = (before ?? "").Trim();
             if (before.Length == 0) return "";
@@ -359,7 +359,7 @@ namespace TempNotes
             return OneLine(Regex.Replace(before, @"^\d+(?:\.\d+)?\s*", ""));
         }
 
-        private static string FirstUrl(string s)
+        internal static string FirstUrl(string s)
         {
             if (string.IsNullOrEmpty(s)) return "";
             Match m = UrlRx.Match(s);

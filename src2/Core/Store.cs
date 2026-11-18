@@ -1141,6 +1141,19 @@ namespace TempNotes
         }
 
         /// <summary>
+        /// 批量改状态：只改字段，不落盘，由调用方最后统一 Save 一次。
+        /// 逐条 SetStatus 会走 Touch→Save，100 条就是 100 次全量存盘
+        /// （每次还要扫一遍 notes 目录 + 给每条笔记算签名），实测 4 秒级卡顿。
+        /// </summary>
+        public void SetStatusQuiet(Note n, int status)
+        {
+            if (n == null) return;
+            n.Status = status;
+            if (status != 0) n.Pinned = false;
+            n.UpdatedAt = Note.NowMs();
+        }
+
+        /// <summary>
         /// 永久删除一条笔记：写墓碑（别的机器同步到之后也会删掉，不会再"复活"）、
         /// 删掉这条自己的笔记文件、回收纳管的附件实体。
         /// </summary>
