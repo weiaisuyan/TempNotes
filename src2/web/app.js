@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-18-2840";
+var APPJS_VER = "2026-11-18-2841";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -2718,9 +2718,11 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
       card.addEventListener("mouseleave", function () { cardHoverOff(card); });
 
       card.addEventListener("dblclick", function (e) {
-        // 只排除附件和操作按钮，卡片其余任何位置（文字、空白、色条）双击都复制
+        // 只排除附件和真正的操作按钮，卡片其余任何位置（文字、空白、色条、
+        // 底部「建 11-18 16:45」那行创建时间）双击都复制。
+        // 以前整块 .acts 都被排除，导致「建 xxx」成了死区：它不是按钮，双击却不复制。
         if (e.target.closest(".att")) return;
-        if (e.target.closest(".acts")) return;     // 编辑 / 删除
+        if (e.target.closest(".acts [data-act]")) return;   // 预览 / 编辑 / 删除
         if (e.target.closest(".ring")) return;     // 待办圈
         if (e.target.closest(".chk")) return;      // 批量勾选框
         if (e.target.closest("[contenteditable='true']")) return;   // 正在编辑
@@ -3725,7 +3727,8 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     var t = e.target;
     if (!t || !t.closest) return;
     // 置顶角标也是按钮：按它绝不能整卡下压 —— 那看起来像「这条开始被拖了」（用户 2026-11-10 反馈）
-    if (t.closest(".att") || t.closest(".ring") || t.closest(".acts") ||
+    // .acts 只排除真正的操作按钮：底部那行「建 xxx」是文字，按住它应该和按卡片其他地方一样有压下反馈。
+    if (t.closest(".att") || t.closest(".ring") || t.closest(".acts [data-act]") ||
         t.closest(".chk") || t.closest(".pin") || t.closest("[contenteditable='true']")) return;
     var n = t.closest(".note");
     if (n) n.classList.add("pressing");

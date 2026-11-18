@@ -1043,7 +1043,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2840 链接卡改直连真实地址（去 TinyURL 提示页）+ 编辑退出不再丢卡片格式");
+                log("版本 2841 卡片底部「建 时间」不再是死区：双击照样复制，按住跟整卡一样有压下反馈");
                 ApplyMinWindowSize();   // 必须在第一次布局之后（Loaded 里）算，DesiredSize 才有效
             _store = new Store();
                 _store.Load();
