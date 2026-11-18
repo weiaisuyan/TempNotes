@@ -1043,7 +1043,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2836 窗口最小尺寸按标题栏实测算（窄到头也不会图标重叠）");
+                log("版本 2837 截图识别（百度 OCR）+ 完成动画顺序修正");
                 ApplyMinWindowSize();   // 必须在第一次布局之后（Loaded 里）算，DesiredSize 才有效
             _store = new Store();
                 _store.Load();
@@ -1079,6 +1079,11 @@ namespace TempNotes2
 
                 _bridge = new Bridge(_store, Eval, log);
                 _bridge.OnDataRootChanged = ApplyDataRoot;
+                // 后台线程（链接解析）要改数据 / 推页面时必须回到 UI 线程。
+                _bridge.OnUiThread = act =>
+                {
+                    try { Dispatcher.BeginInvoke(act); } catch { }
+                };
                 // v2812：网页端在编辑/拖拽时先不重绘，避免同步刷新打断输入。
                 _bridge.OnBusy = SetUiBusy;
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>随记</title>
-<link rel="stylesheet" href="style.css?v=2832">
+<link rel="stylesheet" href="style.css?v=2837">
 </head>
 <body>
 
@@ -13,6 +13,10 @@
       <div class="composer-box">
         <textarea id="composer" class="composer" rows="1"
                   placeholder="记点什么…"></textarea>
+        <button class="composer-ocr" id="composerOcr" type="button"
+                title="截图识别：粘贴待办截图，自动拆成多条" aria-label="截图识别">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2 5.2h2.1L5 3.6h6l.9 1.6H14v7.3H2z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><circle cx="8" cy="8.6" r="2.15" fill="none" stroke="currentColor" stroke-width="1.25"/></svg><span>截图识别</span>
+        </button>
         <div class="composer-bar" id="composerBar">
           <div class="composer-hint" id="composerHint"><kbd>Enter</kbd> 新建</div>
           <button class="composer-clear" id="composerClear" type="button"
@@ -86,6 +90,28 @@
         <div class="row"><span class="k">关闭窗口时收进托盘</span><span class="switch" id="swClose"><i></i></span></div>
 
         <div class="sep"></div>
+        <div class="secttl">截图识别（OCR）</div>
+        <div class="row"><span class="k">识别引擎</span>
+          <select class="ocrsel" id="ocrEngine">
+            <option value="baidu">百度 OCR（免费 1000 次/月）</option>
+            <option value="space">OCR.space（免注册）</option>
+            <option value="system">Windows 自带（离线）</option>
+          </select>
+        </div>
+        <div class="ocrtune" id="ocrSpaceBox" style="display:none">
+          <input class="lgin ocrkey" id="ocrSpaceKey" type="text" spellcheck="false" autocomplete="off" placeholder="OCR.space Key（留空用免费演示额度）">
+        </div>
+        <div class="ocrtune" id="ocrBaiduBox">
+          <input class="lgin ocrkey" id="ocrKey" type="text" spellcheck="false" autocomplete="off" placeholder="百度 API Key">
+          <input class="lgin ocrkey" id="ocrSecret" type="text" spellcheck="false" autocomplete="off" placeholder="百度 Secret Key">
+        </div>
+        <div class="datarow" style="margin-top:6px">
+          <button id="btnOcrSave">保存</button>
+          <button id="btnOcrTest" style="background:transparent;border:1px solid var(--line);color:var(--text)">测试</button>
+        </div>
+        <div class="datanote">百度：登录 cloud.baidu.com → 文字识别 → 创建应用，把 API Key / Secret Key 填进来，每月 1000 次免费。OCR.space 不用注册（演示额度有频率限制）。</div>
+
+        <div class="sep"></div>
         <div class="secttl">数据目录</div>
         <div class="dataroot" id="dataRootPath">—</div>
         <div class="datarow">
@@ -133,7 +159,7 @@
     </div>
   </div>
 
-  <script src="Sortable.min.js?v=2831"></script>
-  <script src="app.js?v=2832"></script>
+  <script src="Sortable.min.js?v=2840"></script>
+  <script src="app.js?v=2837"></script>
 </body>
 </html>

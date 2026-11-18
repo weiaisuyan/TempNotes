@@ -507,7 +507,7 @@ namespace TempNotes
             sb.Append(n.UpdatedAt).Append('|').Append(n.Status).Append('|').Append(n.Sort).Append('|')
               .Append(n.Pinned ? 1 : 0).Append('|').Append(n.Color ?? "").Append('|')
               .Append(n.Attachments == null ? 0 : n.Attachments.Count).Append('|')
-              .Append(n.Text == null ? "" : n.Text);
+              .Append(n.Text == null ? "" : n.Text).Append('|').Append(n.DisplayText ?? "");
             return sb.ToString();
         }
 

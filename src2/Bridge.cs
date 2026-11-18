@@ -86,11 +86,21 @@ namespace TempNotes2
         /// <summary>网页端是否正在编辑/拖拽（v2812）：true 时 C# 推迟磁盘刷新，别打断输入。</summary>
         public Action<bool> OnBusy;
 
+        /// <summary>
+        /// 把一段代码丢回 UI 线程执行（由 MainWindow 接到 Dispatcher）。
+        /// 后台线程只做联网解析，改 Store / 推页面必须回到这里，
+        /// 否则 Store 会被两个线程同时写，而且页面会收到一串密集的 PushAll 导致卡片乱跳。
+        /// </summary>
+        public Action<Action> OnUiThread;
+
         public Bridge(Store store, Action<string> eval, Action<string> log)
         {
             _store = store;
             _eval = eval;
             _log = log;
+
+            // OCR 的 PowerShell 子进程日志也走同一条桥，方便排查
+            OcrHelper.Log = log;
 
             // Shell 缩略图提供程序是 COM，放在 STA 后台线程里最稳；
             // 单线程串行也避免多张大图同时解码把机器拖慢。
@@ -194,6 +204,12 @@ namespace TempNotes2
                         PushAll();
                         break;
 
+                    case "dropempty":
+                        // 微信单卡直拖等来源会在系统层给出 0 种格式：明确提示，避免像没反应。
+                        _log("拖拽无数据 types=" + (p.Length > 1 ? p[1] : ""));
+                        Hint("微信这次没给出拖拽数据，请用右键→多选后再拖");
+                        break;
+
                     case "label":
                         // label|<优先级索引 0..9>|<urlencoded 名字>  空名字 = 这个优先级不显示标签
                         if (p.Length > 2)
@@ -230,6 +246,7 @@ namespace TempNotes2
                             if (n != null)
                             {
                                 n.Text = Uri.UnescapeDataString(p[2]);
+                                n.DisplayText = "";   // 用户手动编辑后，展示文本回到原文
                                 _store.Touch(n); _store.Save(); PushAll();
                                 // 页面只在「编辑结束（失焦 / Ctrl+Enter）」时发一次 update，
                                 // 所以这里文字为空就是真的清空了 —— 直接判空，不用定时器兜。
@@ -403,6 +420,34 @@ namespace TempNotes2
                         }
                         break;
 
+                    case "setocr":
+                        // setocr|引擎(space/baidu/system)|urlencoded apiKey|urlencoded secret|urlencoded spaceKey
+                        if (p.Length > 1)
+                        {
+                            string eng = p[1] ?? "space";
+                            if (eng != "space" && eng != "baidu" && eng != "system") eng = "space";
+                            _store.Settings.OcrEngine = eng;
+                            if (p.Length > 2) _store.Settings.OcrApiKey = Uri.UnescapeDataString(p[2]);
+                            if (p.Length > 3) _store.Settings.OcrSecret = Uri.UnescapeDataString(p[3]);
+                            if (p.Length > 4) _store.Settings.OcrSpaceKey = Uri.UnescapeDataString(p[4]);
+                            _store.SaveSettings();
+                            PushState();
+                            Hint("截图识别引擎：" + (eng == "baidu" ? "百度 OCR" : eng == "space" ? "OCR.space" : "系统自带"));
+                        }
+                        break;
+
+                    case "ocrtest":
+                        {
+                            var st1 = _store.Settings;
+                            string msg;
+                            if (st1.OcrEngine == "baidu") msg = OcrHelper.TestBaidu(st1.OcrApiKey, st1.OcrSecret);
+                            else if (st1.OcrEngine == "space") msg = OcrHelper.TestOcrSpace(st1.OcrSpaceKey);
+                            else msg = "当前是系统自带 OCR（离线，无需测试）";
+                            Hint(msg);
+                            _log("OCR 测试：" + msg);
+                        }
+                        break;
+
                     case "pin":
                         // pin|id —— 置顶/取消置顶（只对未完成的待办有效）
                         if (p.Length > 1)
@@ -543,6 +588,7 @@ namespace TempNotes2
             {
                 id = n.Id,
                 text = n.Text ?? "",
+                display = n.DisplayText ?? "",
                 color = n.Color ?? "",
                 status = n.Status,
                 created = n.CreatedAt,
@@ -884,9 +930,32 @@ namespace TempNotes2
                 if (files == null || files.Length == 0) return;
                 Note note = string.IsNullOrEmpty(targetId) ? null : Find(targetId);
                 int added = 0;
+                int wxAdded = 0;
+                int wxEmpty = 0;
 
                 foreach (var f in files)
                 {
+                    int wxCount;
+                    if (WeChatRecord.IsChatRecordName(Path.GetFileName(f)))
+                    {
+                        try
+                        {
+                            if (new FileInfo(f).Length == 0)
+                            {
+                                wxEmpty++;
+                                continue;
+                            }
+                        }
+                        catch { }
+
+                        if (TryAddWeChatMessages(f, out wxCount))
+                        {
+                            added += wxCount;
+                            wxAdded += wxCount;
+                            continue;
+                        }
+                    }
+
                     if (Directory.Exists(f))
                     {
                         note = note ?? _store.AddNote("", "");
@@ -916,7 +985,16 @@ namespace TempNotes2
                     _store.Save();
                     PushAll();
                     _log("原生拖入完成 n=" + added + " " + sw.ElapsedMilliseconds + "ms");
-                    Hint(added > 1 ? ("已加入 " + added + " 个文件") : "已加入文件");
+                    if (wxAdded > 0 && added > wxAdded)
+                        Hint("已拆成 " + wxAdded + " 条待办，另加入 " + (added - wxAdded) + " 个文件");
+                    else if (wxAdded > 0)
+                        Hint("已拆成 " + wxAdded + " 条待办");
+                    else
+                        Hint(added > 1 ? ("已加入 " + added + " 个文件") : "已加入文件");
+                }
+                else if (wxEmpty > 0)
+                {
+                    Hint("微信这次没有导出内容，请重新多选后再拖");
                 }
             }
             catch (Exception ex) { _log("拖入失败 " + ex.Message); }
@@ -1080,6 +1158,10 @@ namespace TempNotes2
                 "\"autoStart\":" + (st.AutoStart ? "true" : "false") + "," +
                 "\"rightDone\":" + (st.RightDone ? "true" : "false") + "," +
                 "\"closeToTray\":" + (st.CloseToTray ? "true" : "false") + "," +
+                "\"ocrEngine\":" + JsonStr(st.OcrEngine ?? "space") + "," +
+                "\"ocrKey\":" + JsonStr(st.OcrApiKey) + "," +
+                "\"ocrSecret\":" + JsonStr(st.OcrSecret) + "," +
+                "\"ocrSpaceKey\":" + JsonStr(st.OcrSpaceKey) + "," +
                 "\"dataRoot\":" + JsonStr(_store.Root) + "," +
                 "\"dataSize\":" + JsonStr(_store.DataSizeText) + "," +
                 "\"labels\":[" + LabelsJson() + "]," +
@@ -1289,6 +1371,8 @@ namespace TempNotes2
                 };
                 _uploads[token] = u;
                 _log("上传开始 " + name + " " + (size / 1048576.0).ToString("0.0") + "MB");
+                if (WeChatRecord.IsChatRecordName(name))
+                    Hint("正在读取微信聊天记录，请稍候…");
             }
             catch (Exception ex)
             {
@@ -1326,7 +1410,84 @@ namespace TempNotes2
                 u.Fs.Dispose();
                 u.Fs = null;
 
+                // 微信偶尔会拖出一个 0 字节的聊天记录包（内容还没生成好/该卡片不支持导出）。
+                // 这种绝不能落成空白附件卡，直接提示用户重拖。
+                if (WeChatRecord.IsChatRecordName(u.Name) && u.Got == 0)
+                {
+                    try { if (File.Exists(u.TempPath)) File.Delete(u.TempPath); } catch { }
+                    _eval("window.api.upDone&&window.api.upDone('" + Js(u.Token) + "','');");
+                    UpBatchStep();
+                    Hint("微信这次没有导出内容，请重新多选后再拖");
+                    _log("微信聊天记录空包，已忽略");
+                    return;
+                }
+
+                // 微信「多选消息 → 拖出」会生成 聊天记录_日期_时间.zip。
+                // 在它被当成普通附件落盘之前拆开，一条消息生成一条待办；
+                // 解析失败则继续走下面的普通附件逻辑，不影响正常文件拖入。
+                int wxCount;
+                if (WeChatRecord.IsChatRecordName(u.Name) && TryAddWeChatMessages(u.TempPath, out wxCount))
+                {
+                    try { if (File.Exists(u.TempPath)) File.Delete(u.TempPath); } catch { }
+                    _eval("window.api.upDone&&window.api.upDone('" + Js(u.Token) + "','');");
+                    UpBatchStep();
+                    Hint("已拆成 " + wxCount + " 条待办");
+                    _log("微信聊天记录拆条 " + wxCount + " 条");
+                    return;
+                }
+
                 Note note = string.IsNullOrEmpty(u.TargetId) ? null : Find(u.TargetId);
+                if (note == null && u.TargetId == "__ocr__")
+                {
+                    // 截图识别：不落附件，拿临时文件跑 OCR，识别出的每一行建一条待办。
+                    string tmp = u.TempPath;
+                    _eval("window.api.upDone&&window.api.upDone('" + Js(u.Token) + "','');");
+                    UpBatchStep();
+                    Hint("正在识别截图…");
+                    _log("截图识别开始 " + u.Name);
+                    var th = new Thread(() =>
+                    {
+                        var st0 = _store.Settings;
+                        var lines = OcrHelper.Recognize(tmp, st0.OcrEngine, st0.OcrApiKey, st0.OcrSecret, st0.OcrSpaceKey);
+                        var todos = OcrHelper.SplitTodos(lines);
+                        try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                        Action apply = () =>
+                        {
+                            if (todos.Count == 0)
+                            {
+                                Hint(string.IsNullOrEmpty(OcrHelper.LastError)
+                                    ? "这张截图里没认出任待办文字"
+                                    : ("识别失败：" + OcrHelper.LastError));
+                                _log("截图识别无结果 " + (OcrHelper.LastError ?? ""));
+                                _log("截图识别无结果");
+                                return;
+                            }
+                            long mx = 0;
+                            foreach (var x in _store.Db.Notes)
+                            {
+                                if (x == null || x.Status != 0) continue;
+                                long k = x.SortKey;
+                                if (k > mx) mx = k;
+                            }
+                            for (int i = 0; i < todos.Count; i++)
+                            {
+                                var nn = new Note();
+                                nn.Text = todos[i];
+                                nn.Sort = mx + (todos.Count - i);   // 第一行排最上面
+                                _store.Db.Notes.Add(nn);
+                            }
+                            _store.Save();
+                            PushAll();
+                            Hint("识别出 " + todos.Count + " 条待办");
+                            _log("截图识别完成 " + todos.Count + " 条");
+                        };
+                        if (OnUiThread != null) { try { OnUiThread(apply); } catch { } }
+                        else { try { apply(); } catch { } }
+                    })
+                    { IsBackground = true, Name = "TempNotesOcr" };
+                    th.Start();
+                    return;
+                }
                 if (note == null)
                 {
                     // 同一批拖入（一次多个文件到输入框/空白处）只新建一条笔记，
@@ -1405,6 +1566,187 @@ namespace TempNotes2
             PushAll();
             foreach (var a in done) QueueThumb(a);
             if (done.Count > 0) Hint(done.Count > 1 ? ("已加入 " + done.Count + " 个文件") : "已加入文件");
+        }
+
+        /// <summary>
+        /// 把微信聊天记录 zip 里的每条消息建成一条待办。
+        /// 顺序按聊天记录原顺序：第一条 Sort 最大，列表里就排在最上面。
+        /// </summary>
+        private bool TryAddWeChatMessages(string zipPath, out int count)
+        {
+            count = 0;
+
+            // 媒体实体（图片/视频/文件）要落到库里的 blobs 下，但每条消息各占一个笔记目录，
+            // 而解析时还不知道哪个笔记 id。先解到库里一个临时目录，建完笔记再搬进去。
+            // 放库里而不是 %TEMP%：避免跨盘复制，也避开系统临时目录被清理/被别的程序占着的情况。
+            string mediaDir = Path.Combine(_store.BlobDir, "_wx-tmp", Guid.NewGuid().ToString("N"));
+            List<WeChatRecord.Message> messages;
+            try
+            {
+                if (!WeChatRecord.TryParse(zipPath, mediaDir, out messages) || messages == null || messages.Count == 0)
+                    return false;
+            }
+            catch
+            {
+                try { if (Directory.Exists(mediaDir)) Directory.Delete(mediaDir, true); } catch { }
+                return false;
+            }
+
+            try
+            {
+                long maxSort = 0;
+                foreach (var x in _store.Db.Notes)
+                {
+                    if (x == null || x.Status != 0) continue;
+                    long k = x.SortKey;
+                    if (k > maxSort) maxSort = k;
+                }
+
+                var pending = new List<KeyValuePair<string, WeChatRecord.Message>>();
+                int mediaCount = 0;
+                for (int i = 0; i < messages.Count; i++)
+                {
+                    bool hasMedia = !string.IsNullOrEmpty(messages[i].MediaPath) && File.Exists(messages[i].MediaPath);
+
+                    Note note = new Note();
+                    // 图片/视频/文件：用户要的是「这条待办就是那个附件」，不是文件名文字。
+                    // 所以有实体时正文留空，卡片上只有附件本身；双击卡片走的也是
+                    // 「复制附件」分支（Text 为空才走 copyatts）。
+                    // 只有 zip 里找不到实体时才退回显示原文，免得变成一张空白卡。
+                    note.Text = hasMedia ? "" : (messages[i].RawText ?? "");
+                    // 首屏就用本地排好的「标题 + 链接」，卡片高度一次到位，
+                    // 后台解析完只替换文本、不改结构，视觉上不再跳。
+                    note.DisplayText = hasMedia ? ""
+                        : (string.IsNullOrEmpty(messages[i].DisplayText)
+                            ? (messages[i].RawText ?? "") : messages[i].DisplayText);
+                    note.Sort = maxSort + (messages.Count - i);
+                    _store.Db.Notes.Add(note);
+                    pending.Add(new KeyValuePair<string, WeChatRecord.Message>(note.Id, messages[i]));
+
+                    // 图片/视频/文件：搬进这条笔记自己的 blobs 目录，挂成附件。
+                    // 以前只把 "[图片] xxx.jpg" 当纯文本，用户看到的只有文件名，内容全丢了。
+                    if (hasMedia)
+                    {
+                        try
+                        {
+                            if (note.Attachments == null) note.Attachments = new List<Attachment>();
+                            var att = _store.AddAttachment(note, messages[i].MediaPath, true);
+                            if (att != null)
+                            {
+                                att.Kind = messages[i].MediaKind ?? "file";
+                                mediaCount++;
+                            }
+                        }
+                        catch (Exception ex) { _log("聊天记录媒体挂载失败 " + ex.Message); }
+                    }
+                }
+                _store.Save();
+                count = messages.Count;
+
+                // 标题解析 / 短链要联网，绝不能在拖入线程里做（会卡住界面）。
+                // 先按原文落卡，后台再逐条补展示文本。
+                QueueWeChatEnrich(pending);
+                if (mediaCount > 0) _log("聊天记录媒体已挂载 n=" + mediaCount);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log("微信聊天记录建待办失败 " + ex.Message);
+                return false;
+            }
+            finally
+            {
+                // 临时目录里的实体已经复制进 blobs，原样删掉。
+                try { if (Directory.Exists(mediaDir)) Directory.Delete(mediaDir, true); } catch { }
+                // 顺手收掉空的 _wx-tmp 父目录，别在 blobs 里留一个永久空壳。
+                try
+                {
+                    string parent = Path.Combine(_store.BlobDir, "_wx-tmp");
+                    if (Directory.Exists(parent) && Directory.GetFileSystemEntries(parent).Length == 0)
+                        Directory.Delete(parent, true);
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>
+        /// 后台补展示文本：标题解析 + 短链都要联网，放在独立线程里串行做，
+        /// 拖入路径立即返回。
+        ///
+        /// 关键：只在「全部解析完」之后一次性回 UI 线程写盘 + 推页面。
+        /// 早期版本每解析完一条就 Save+PushAll，页面被连续重绘，
+        /// 卡片位置来回跳（用户实测「待办条不断切换排序」）。
+        /// </summary>
+        private void QueueWeChatEnrich(List<KeyValuePair<string, WeChatRecord.Message>> pending)
+        {
+            if (pending == null || pending.Count == 0) return;
+            var work = new List<KeyValuePair<string, WeChatRecord.Message>>(pending);
+            var t = new Thread(() =>
+            {
+                var updates = new List<KeyValuePair<string, string>>();   // noteId → display
+                try
+                {
+                    foreach (var kv in work)
+                    {
+                        string id = kv.Key;
+                        var msg = kv.Value;
+                        if (msg == null) continue;
+
+                        string display = null;
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(msg.Url))
+                            {
+                                LinkResolver.Enriched e = LinkResolver.EnrichUrl(msg.Url, msg.TitleSeed);
+                                if (e != null) display = WeChatRecord.BuildCardDisplay(e.Title, e.Url);
+                            }
+                            else if (msg.TitleOnly)
+                            {
+                                LinkResolver.Enriched e = LinkResolver.EnrichTitle(msg.TitleSeed);
+                                if (e != null)
+                                    display = WeChatRecord.BuildCardDisplay(e.Title,
+                                        string.IsNullOrEmpty(e.Url) ? e.SearchUrl : e.Url);
+                            }
+                        }
+                        catch (Exception ex) { _log("链接解析失败 " + ex.Message); }
+
+                        if (string.IsNullOrEmpty(display) || display == msg.RawText) continue;
+                        if (display == msg.DisplayText) continue;      // 首屏已经是这个样子了
+                        updates.Add(new KeyValuePair<string, string>(id, display));
+                    }
+                }
+                catch (Exception ex) { _log("微信链接解析线程失败 " + ex.Message); }
+
+                if (updates.Count == 0) return;
+
+                Action apply = () =>
+                {
+                    int n = 0;
+                    foreach (var kv in updates)
+                    {
+                        Note note = Find(kv.Key);
+                        if (note == null) continue;                     // 用户已经删掉了，别复活
+                        // 用户手动编辑过原文时，update 分支会把 DisplayText 清空 —— 那就不覆盖。
+                        if (string.IsNullOrEmpty(note.DisplayText)) continue;
+                        note.DisplayText = kv.Value;
+                        // 故意不动 UpdatedAt：这条待办的「更新于」应该还是用户拖进来的那一刻，
+                        // 补个标题不该让它看起来刚被改过，也不会影响排序键。
+                        // 只改这一张卡，不整页重渲染 —— 否则所有卡片一起重排，看着像在乱跳。
+                        try { _eval("window.api.setNoteDisplay&&window.api.setNoteDisplay('" + Js(note.Id) + "'," + JsonStr(kv.Value) + ");"); }
+                        catch { }
+                        n++;
+                    }
+                    if (n == 0) return;
+                    _store.Save();      // 落盘一次，不推全量
+                    _log("微信链接解析完成 n=" + n);
+                };
+
+                var ui = OnUiThread;
+                if (ui != null) { try { ui(apply); } catch (Exception ex) { _log("链接解析回填失败 " + ex.Message); } }
+                else { try { apply(); } catch (Exception ex) { _log("链接解析回填失败 " + ex.Message); } }
+            })
+            { IsBackground = true, Name = "TempNotesLink" };
+            t.Start();
         }
 
         /// <summary>塞进单引号 JS 字符串里：转义反斜杠/引号/换行。</summary>
@@ -1878,6 +2220,7 @@ namespace TempNotes2
         {
             [DataMember(Name = "id")] public string id { get; set; }
             [DataMember(Name = "text")] public string text { get; set; }
+            [DataMember(Name = "display")] public string display { get; set; }
             [DataMember(Name = "color")] public string color { get; set; }
             [DataMember(Name = "status")] public int status { get; set; }
             [DataMember(Name = "created")] public long created { get; set; }

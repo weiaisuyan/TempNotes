@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-11-2835";
+var APPJS_VER = "2026-11-18-2837";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -50,7 +50,7 @@ var APPJS_VER = "2026-11-11-2835";
   var stripEl = document.getElementById("fstrip");
   var _nmTimer = 0;        // 设置里改名后重绘卡片的防抖
   var _fDragPt = null;     // 筛选视图里「想拖」的起点（用来弹提醒）
-var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, closeToTray: false };
+var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, closeToTray: false, ocrEngine: "baidu", ocrKey: "", ocrSecret: "", ocrSpaceKey: "" };
   var lastOrderSnap = null;
   var undoStopTimer = null;
 
@@ -181,14 +181,14 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
      只在内容真的变了之后重算一次。 */
   var _hayCache = {};
   function hayStamp(n) {
-    return (n.updated || 0) + "|" + String(n.text || "").length + "|" + ((n.atts || []).length);
+    return (n.updated || 0) + "|" + String(n.text || "").length + "|" + String(n.display || "").length + "|" + ((n.atts || []).length);
   }
   function noteHaystack(n) {
     var key = n.id || "";
     var stamp = hayStamp(n);
     var c = _hayCache[key];
     if (c && c.stamp === stamp) return c.hay;
-    var parts = [n.text || ""];
+    var parts = [n.text || "", n.display || ""];
     (n.atts || []).forEach(function (a) { if (a && a.name) parts.push(a.name); });
     var hay = parts.join("\n").normalize("NFKC").toLowerCase().replace(/[\u0300-\u036f]/g, "");
     _hayCache[key] = { stamp: stamp, hay: hay };
@@ -235,7 +235,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
     return head;
   }
   function isClipped(n) {
-    return !!n && String(n.text || "").length > TEXT_LIMIT;
+    return !!n && String(n.display || n.text || "").length > TEXT_LIMIT;
   }
   function fmtChars(n) {
     n = n || 0;
@@ -2227,7 +2227,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
       var atts = (n.atts && n.atts.length)
         ? '<div class="atts">' + n.atts.map(attHtml).join("") + '</div>' : "";
       // v2835：只渲染前 TEXT_LIMIT 个字符，整篇走「预览（N 字）」进大文本查看器
-      var fullText = n.text || "";
+      var fullText = n.display || n.text || "";
       var clipped = fullText.length > TEXT_LIMIT;
       var shownText = clipped ? clipText(fullText, TEXT_LIMIT) : fullText;
 
@@ -2397,6 +2397,38 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     } catch (e) { }
   })();
 
+  /* ---------- 完成/取消完成：先打勾，紧接着立刻下移（但不改滑动速度） ----------
+     以前是点一下立刻 send("toggle")，卡片「嗖」地掉到已完成区时，圈上的对勾还没画出来。
+     中间试过固定等 320ms，结果变成「打上勾 → 停一下 → 才下滑」，用户说停顿很明显。
+     现在改成：本地把圈点亮 → 强制一次样式刷新（保证对勾这一帧就画出来）→ 下一帧立刻提交，
+     只隔一个动画帧（约 16ms），既不会「没打勾就掉下去」，也不会「打完勾干等」。 */
+  var _togglePending = {};
+  function toggleWithAnim(id) {
+    if (_togglePending[id]) return;
+    var card = listEl.querySelector('.note[data-id="' + id + '"]');
+    var n = find(id);
+    if (!card || !n) { send("toggle|" + id); return; }
+
+    var goingDone = n.status !== 1;
+    _togglePending[id] = true;
+    var ring = card.querySelector(".ring");
+    if (ring) ring.classList.toggle("on", goingDone);
+    card.classList.toggle("done", goingDone);
+
+    // 强制同步布局/样式计算：把「已点亮」这个状态落到当前帧。
+    void card.offsetWidth;
+
+    // 双 rAF：第一个 rAF 结束时浏览器已经把这一帧画出来了（对勾可见），
+    // 第二个 rAF 再提交重排。总延迟约 16-32ms，人眼看就是「打勾的同时往下走」。
+    // 注意：这里只负责「别等」，位移的速度曲线交给 render 里那条统一曲线，不要在这里改。
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        delete _togglePending[id];
+        send("toggle|" + id);
+      });
+    });
+  }
+
   /* ---------- 右键 = 左键点待办圈（按下压感 / 移出取消 / 松手生效） ---------- */
   var _rpress = null;
 
@@ -2442,7 +2474,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     var st = _rpress;
     var ok = st.live && rpHit(st, e.clientX, e.clientY);
     cancelRightPress();
-    if (ok) send("toggle|" + st.id);
+    if (ok) toggleWithAnim(st.id);
   }, true);
   window.addEventListener("blur", function () { cancelRightPress(); });
 
@@ -2567,7 +2599,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         el.addEventListener("click", function (e) {
           e.stopPropagation();
           var act = el.getAttribute("data-act");
-          if (act === "toggle") { if (!batchMode) send("toggle|" + id); }
+          if (act === "toggle") { if (!batchMode) toggleWithAnim(id); }
           else if (act === "delete") { send("delete|" + id); showHint("已移入回收站"); }
           else if (act === "edit") { if (!batchMode) startEdit(id); }
           else if (act === "check") { toggleBatchSel(id); }
@@ -2947,7 +2979,8 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     if (isClipped(find(id))) {
       textEl.classList.remove("open");
       btn.style.display = "";
-      btn.textContent = "预览（" + fmtChars(String((find(id) || {}).text || "").length) + " 字）";
+      var cn = find(id) || {};
+      btn.textContent = "预览（" + fmtChars(String(cn.display || cn.text || "").length) + " 字）";
       return;
     }
     var open = !!_expanded[id];
@@ -2955,7 +2988,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     var over = open ? true : textOverflows(textEl);
     btn.style.display = over ? "" : "none";
     var n0 = find(id);
-    var cnt = n0 ? String(n0.text || "").length : 0;
+    var cnt = n0 ? String(n0.display || n0.text || "").length : 0;
     btn.textContent = open ? "收起" : (over && cnt ? "预览（" + fmtChars(cnt) + " 字）" : "预览");
   }
 
@@ -3018,7 +3051,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
   }
 
   function rawPages(n) {
-    var t = n.text || "";
+    var t = n.display || n.text || "";
     if (_raw.pages && _raw.pageLen === t.length && _raw.pid === n.id) return _raw.pages;
     _raw.pages = buildPages(t);
     _raw.pageLen = t.length;
@@ -3037,7 +3070,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     rawPageEl.textContent = (page + 1) + " / " + pages.length;
     rawPrevBtn.disabled = page <= 0;
     rawNextBtn.disabled = page >= pages.length - 1;
-    rawMetaEl.textContent = fmtChars((n.text || "").length) + " 字 · 第 " + (page + 1) + " / " + pages.length + " 页";
+    rawMetaEl.textContent = fmtChars((n.display || n.text || "").length) + " 字 · 第 " + (page + 1) + " / " + pages.length + " 页";
     rawTitleEl.textContent = "全文";
   }
 
@@ -3266,12 +3299,44 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     syncHotzones();
   }
 
+  /* ---------- 截图识别模式（输入框右侧的按钮） ----------
+     只有输入框空着的时候按钮才出现；一打字就淡出（用户明确要求）。
+     选了它以后，往输入框里粘贴的图片不再当成附件，而是走 OCR 拆成多条待办；
+     没选时保持原行为：整张图作为一条待办的附件。 */
+  var _ocrMode = false;
+  var composerOcrBtn = document.getElementById("composerOcr");
+
+  function setOcrMode(on) {
+    // 选了在线引擎但还没填 Key：直接告诉用户去设置里填，别让他粘贴完发现没反应
+    if (on) {
+      var eng = settings.ocrEngine || "baidu";
+      if (eng === "baidu" && (!settings.ocrKey || !settings.ocrSecret)) {
+        showHint("先在设置里填百度 OCR 的 API Key / Secret Key", 4200);
+        return;
+      }
+    }
+    _ocrMode = !!on;
+    if (composerWrap) composerWrap.classList.toggle("ocr", _ocrMode);
+    if (inputEl) inputEl.placeholder = _ocrMode ? "粘贴待办截图，自动拆成多条…" : "记点什么…";
+  }
+
+  if (composerOcrBtn) {
+    composerOcrBtn.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    composerOcrBtn.addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      setOcrMode(!_ocrMode);
+      if (inputEl) { try { inputEl.focus(); } catch (e1) { } }
+    });
+  }
+
   /* ---------- 输入框 ---------- */
   if (inputEl) {
     var syncComposerClear = function () {
       var hasText = inputEl.value.length > 0;
       if (composerWrap) composerWrap.classList.toggle("hastext", hasText);
       if (composerHint) composerHint.classList.toggle("on", inputEl.value.trim().length > 0);
+      // 一开始打字就自动退出截图识别模式（按钮同时也被 CSS 淡出）
+      if (hasText && _ocrMode) setOcrMode(false);
     };
 
     var clearComposer = function () {
@@ -3473,6 +3538,33 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     document.getElementById("swRight").classList.toggle("on", settings.rightDone);
     send("rightdone|" + (settings.rightDone ? 1 : 0));
   });
+  /* ---------- 截图识别（OCR）设置 ---------- */
+  function syncOcrBoxes() {
+    var sel = document.getElementById("ocrEngine");
+    var eng = sel ? sel.value : "space";
+    var sb = document.getElementById("ocrSpaceBox");
+    var bb = document.getElementById("ocrBaiduBox");
+    if (sb) sb.style.display = (eng === "space") ? "" : "none";
+    if (bb) bb.style.display = (eng === "baidu") ? "" : "none";
+  }
+  function pushOcrSettings() {
+    var sel = document.getElementById("ocrEngine");
+    var k = document.getElementById("ocrKey");
+    var s = document.getElementById("ocrSecret");
+    var sk = document.getElementById("ocrSpaceKey");
+    settings.ocrEngine = sel ? sel.value : "space";
+    settings.ocrKey = k ? k.value.trim() : "";
+    settings.ocrSecret = s ? s.value.trim() : "";
+    settings.ocrSpaceKey = sk ? sk.value.trim() : "";
+    send("setocr|" + settings.ocrEngine +
+      "|" + encodeURIComponent(settings.ocrKey) +
+      "|" + encodeURIComponent(settings.ocrSecret) +
+      "|" + encodeURIComponent(settings.ocrSpaceKey));
+  }
+  var ocrEngineSel = document.getElementById("ocrEngine");
+  if (ocrEngineSel) ocrEngineSel.addEventListener("change", function () { syncOcrBoxes(); pushOcrSettings(); });
+  on("btnOcrSave", function () { pushOcrSettings(); showHint("已保存"); });
+  on("btnOcrTest", function () { pushOcrSettings(); send("ocrtest"); });
 
   /* ---------- C# 入口 ---------- */
   window.api = {
@@ -3558,7 +3650,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
         var len = String(n.text || "").length;
         var size = len > TRASH_PREVIEW ? '<span class="ln">' + fmtChars(len) + ' 字</span>' : "";
         return '<div class="trashitem" data-id="' + esc(n.id) + '">' +
-          '<div class="t">' + esc(trashPreview(n.text)) + '</div>' +
+          '<div class="t">' + esc(trashPreview(n.display || n.text)) + '</div>' +
           '<div class="a"><span data-act="restore">恢复</span>' +
           '<span class="del" data-act="purge">彻底删除</span>' +
           '<span style="margin-left:auto;color:var(--faint)">' + size +
@@ -3582,6 +3674,14 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
       var b = document.getElementById("swAuto"); if (b) b.classList.toggle("on", !!settings.autoStart);
     var c2 = document.getElementById("swRight"); if (c2) c2.classList.toggle("on", !!settings.rightDone);
       var c3 = document.getElementById("swClose"); if (c3) c3.classList.toggle("on", !!settings.closeToTray);
+      var c4 = document.getElementById("ocrEngine");
+      if (c4 && document.activeElement !== c4) { c4.value = settings.ocrEngine || "space"; syncOcrBoxes(); }
+      var ok = document.getElementById("ocrKey");
+      if (ok && document.activeElement !== ok) ok.value = settings.ocrKey || "";
+      var os = document.getElementById("ocrSecret");
+      if (os && document.activeElement !== os) os.value = settings.ocrSecret || "";
+      var osp = document.getElementById("ocrSpaceKey");
+      if (osp && document.activeElement !== osp) osp.value = settings.ocrSpaceKey || "";
       var dr = document.getElementById("dataRootPath"); if (dr && settings.dataRoot) dr.textContent = settings.dataRoot;
       var dz = document.getElementById("dataSize"); if (dz && settings.dataSize) dz.textContent = "已占用 " + settings.dataSize;
       // 优先级名称：另一台机器改名后 C# 会推下来，这里只在不一致时才重画（否则会打断正在输入的设置框）
@@ -3641,6 +3741,27 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     openSettings: function () { openSettings(true); },
     setMaximized: function () {},
     reportAttRects: function () { reportAllAtts(true); },
+    /* 只更新一张卡的展示文本（后台链接解析用）。
+       刻意不走 render()：整页重渲染会重建 DOM 并跑 FLIP，所有卡片一起动，
+       用户看到的就是「待办条不断切换排序」。这里只改这一个节点。 */
+    setNoteDisplay: function (id, display) {
+      try {
+        var n = find(id);
+        if (!n) return false;
+        if (editingId === id) return false;          // 正在编辑这条，别打断
+        n.display = display || "";
+        var card = listEl.querySelector('.note[data-id="' + id + '"]');
+        if (!card) return false;
+        var textEl = card.querySelector("[data-act='text']");
+        if (!textEl) return false;
+        var full = n.display || n.text || "";
+        var shown = full.length > TEXT_LIMIT ? clipText(full, TEXT_LIMIT) : full;
+        textEl.innerHTML = query ? hlText(shown, query) : mdHtml(shown);
+        try { syncExpand(card); } catch (e1) { }
+        try { reportAllAtts(true); } catch (e2) { }
+        return true;
+      } catch (e) { return false; }
+    },
     /* 缩略图在后台生成完成后只替换这一个附件，不整页重渲染。 */
     setAttThumb: function (id, url) {
       try {
@@ -4462,6 +4583,56 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     try { t.dispatchEvent(new Event("input", { bubbles: true })); } catch (e3) { }
   }
   document.addEventListener("paste", pasteLinkAsMarkdown, true);
+
+  /* ---------- 粘贴图片：默认整图落成一条待办；截图识别模式下走 OCR ----------
+     以前往输入框里粘贴截图没有任何反应（只有链接粘贴做了处理）。
+     现在两种行为：
+       · 普通模式 → 整张图片作为一条新待办的附件；
+       · 截图识别模式 → 送去做 OCR，识别出的每一行都变成一条待办。 */
+  function pasteImages(e) {
+    var dt = e.clipboardData;
+    if (!dt) return;
+    var files = [];
+    try {
+      var items = dt.items || [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (it.kind === "file" && /^image\//i.test(it.type || "")) {
+          var f = it.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+    } catch (e1) { }
+    if (!files.length) return;
+
+    // 卡片正文正在编辑时别抢粘贴
+    var t = e.target;
+    if (t && t.closest && t.closest("[contenteditable='true']")) return;
+
+    e.preventDefault();
+    var ocr = _ocrMode;
+    var stamp = new Date();
+    var base = "截图_" + stamp.getFullYear() +
+      ("0" + (stamp.getMonth() + 1)).slice(-2) + ("0" + stamp.getDate()).slice(-2) + "_" +
+      ("0" + stamp.getHours()).slice(-2) + ("0" + stamp.getMinutes()).slice(-2) + ("0" + stamp.getSeconds()).slice(-2);
+
+    var tiles = files.map(function (f, idx) {
+      var nm = (files.length > 1 ? base + "_" + (idx + 1) : base) + ".png";
+      try {
+        Object.defineProperty(f, "name", { value: nm, configurable: true });
+      } catch (e2) { }
+      return upTile(nm);
+    });
+    shelfAdd(tiles);
+    try { send("upbatch|" + files.length); } catch (e3) { }
+    for (var j = 0; j < files.length; j++) {
+      // "__ocr__" 是约定目标：C# 收到后不落附件，直接跑 OCR
+      startUpload(files[j], ocr ? "__ocr__" : "", tiles[j]);
+    }
+    if (ocr) showHint("正在识别截图…", 5000);
+    else _dropNewPending = true;
+  }
+  document.addEventListener("paste", pasteImages, true);
   function clearDropTargetCard() {
     if (_dropTargetEl) { try { _dropTargetEl.classList.remove("drop-target"); } catch (e) { } _dropTargetEl = null; }
   }

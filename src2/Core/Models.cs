@@ -49,6 +49,12 @@ namespace TempNotes
         /// </summary>
         [DataMember(Name = "sort", Order = 7)] public long Sort { get; set; }
 
+        /// <summary>
+        /// 展示用文本（可选）。微信链接卡片导入时，Text 保留原文，这里放“标题 + 打开链接”的 Markdown；
+        /// 为空时页面回退显示 Text。双击复制始终用 Text，所以仍复制原文。
+        /// </summary>
+        [DataMember(Name = "display", Order = 9)] public string DisplayText { get; set; }
+
         /// <summary>置顶：只有 status=0（未完成）时有效。完成/进回收站都会清掉（Store.SetStatus 统一处理）。</summary>
         [DataMember(Name = "pinned", Order = 8)] public bool Pinned { get; set; }
 
@@ -148,12 +154,23 @@ namespace TempNotes
         // 关闭窗口时收进托盘（默认 false = 关闭即退出程序）
         [DataMember(Name = "closeToTray", Order = 12)] public bool CloseToTray { get; set; }
 
+        // ===== 截图识别 =====
+        // 引擎三选一：
+        //   "space"  = OCR.space（免费、免注册，默认 helloworld 演示 key；可填自己的 key 提高额度）
+        //   "baidu"  = 百度智能云 OCR（要去百度云建应用拿 Key，免费 1000 次/月）
+        //   "system" = Windows 自带 OCR（离线，质量一般）
+        [DataMember(Name = "ocrEngine", Order = 13)] public string OcrEngine { get; set; }
+        [DataMember(Name = "ocrApiKey", Order = 14)] public string OcrApiKey { get; set; }
+        [DataMember(Name = "ocrSecret", Order = 15)] public string OcrSecret { get; set; }
+        [DataMember(Name = "ocrSpaceKey", Order = 16)] public string OcrSpaceKey { get; set; }
+
         // DataContractJsonSerializer 反序列化不会调用构造函数，
         // 老 settings.json 里没有 rightDone 时会变成 false；这里先铺默认值再覆盖。
         [System.Runtime.Serialization.OnDeserializing]
         private void BeforeLoad(System.Runtime.Serialization.StreamingContext ctx)
         {
             RightDone = true;
+            OcrEngine = "baidu";     // 老 settings.json 没这个字段时给默认值
         }
 
         public Settings()
@@ -170,6 +187,10 @@ namespace TempNotes
             Glass = true;
             RightDone = true;
             GlassAlpha = 0.72;  // 窗口底色不透明度（越小越透）
+            OcrEngine = "baidu";
+            OcrApiKey = "";
+            OcrSecret = "";
+            OcrSpaceKey = "";
         }
     }
 }

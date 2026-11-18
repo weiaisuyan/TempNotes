@@ -82,6 +82,7 @@ body.batch .composer-wrap{
   transform:translateY(-6px) scale(.995);
 }
 .composer-box{
+  position:relative;
   background:color-mix(in srgb, var(--card) 55%, transparent);
   border:1px solid var(--line); border-radius:10px;
   transition:border-color .16s ease, background .16s ease;
@@ -111,6 +112,42 @@ body.batch .composer-wrap{
   background-clip:padding-box;
 }
 .composer::placeholder{color:var(--faint)}
+
+/* 截图识别按钮：贴在输入框右侧。只有输入框为空、且没在批量模式时出现；
+   一旦开始打字就淡出（用户 2026-11-18 明确要求「输入东西后按钮就没有了」）。 */
+.composer-ocr{
+  position:absolute; right:8px; top:8px;
+  display:flex; align-items:center; gap:5px;
+  height:28px; padding:0 9px;
+  border:1px solid color-mix(in srgb, var(--text) 14%, transparent);
+  border-radius:7px;
+  background:color-mix(in srgb, var(--card) 70%, transparent);
+  color:color-mix(in srgb, var(--text) 62%, transparent);
+  font:inherit; font-size:11.5px; letter-spacing:.02em; line-height:1;
+  cursor:pointer; user-select:none;
+  opacity:1; transform:none;
+  transition:opacity .16s ease, transform .16s ease, background .16s ease,
+             color .16s ease, border-color .16s ease;
+}
+.composer-ocr svg{flex:0 0 auto; opacity:.85}
+.composer-ocr:hover{
+  background:color-mix(in srgb, var(--text) 9%, transparent);
+  color:var(--text);
+  border-color:color-mix(in srgb, var(--text) 26%, transparent);
+}
+.composer-ocr:active{transform:scale(.96)}
+/* 有字就消失 */
+.composer-wrap.hastext .composer-ocr{
+  opacity:0; transform:translateY(-3px); pointer-events:none;
+}
+/* 选中后：保持可见（即使空着也一直亮着），换主色，提示「当前在识别模式」 */
+.composer-wrap.ocr .composer-ocr{
+  opacity:1; pointer-events:auto;
+  background:color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color:color-mix(in srgb, var(--accent) 62%, transparent);
+  color:color-mix(in srgb, var(--accent) 88%, var(--text));
+}
+body.batch .composer-ocr{display:none}
 
 /* 第二行：有文字才展开（高度 0 → 30px，和整窗动画同一条曲线）。
    左：Enter 新建提示；右：清除。输入框本体只占第一行。 */
@@ -1202,8 +1239,7 @@ body:not(.sorting):not(.scrolling) .note.hovering .pin{opacity:.72}
 .empty.filtered button:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28)}
 
 /* ---------- 设置里的「优先级名称」2 列输入 ---------- */
-.labelgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px}
-.labelgrid .lgrow{
+.labelgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px}.labelgrid .lgrow{
   display:flex;align-items:center;gap:6px;
   min-width:0;cursor:text;
 }
@@ -1220,6 +1256,30 @@ body:not(.sorting):not(.scrolling) .note.hovering .pin{opacity:.72}
 .labelgrid .lgin::placeholder{color:color-mix(in srgb,var(--muted) 60%,transparent)}
 .labelgrid .lgin:hover{background:rgba(255,255,255,.09)}
 .labelgrid .lgin:focus{
+  background:rgba(255,255,255,.10);
+  border-color:color-mix(in srgb,var(--accent) 55%,transparent);
+}
+
+/* 设置里的「截图识别」密钥输入 */
+.ocrsel{
+  height:26px;max-width:170px;padding:0 6px;
+  background:rgba(255,255,255,.06);color:var(--text);
+  border:1px solid var(--line);border-radius:7px;
+  font:inherit;font-size:11.5px;outline:none;cursor:pointer;
+}
+.ocrsel option{background:#1b1b1b;color:#eee}
+.ocrtune{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.ocrtune .ocrkey{
+  height:28px;padding:0 9px;
+  background:rgba(255,255,255,.06);
+  border:1px solid transparent;border-radius:7px;
+  color:var(--text);font:inherit;font-size:11.5px;
+  outline:none;
+  transition:background .15s ease,border-color .15s ease;
+}
+.ocrtune .ocrkey::placeholder{color:color-mix(in srgb,var(--muted) 60%,transparent)}
+.ocrtune .ocrkey:hover{background:rgba(255,255,255,.09)}
+.ocrtune .ocrkey:focus{
   background:rgba(255,255,255,.10);
   border-color:color-mix(in srgb,var(--accent) 55%,transparent);
 }
