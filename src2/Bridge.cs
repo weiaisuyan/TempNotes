@@ -1889,8 +1889,8 @@ namespace TempNotes2
         /// <summary>
         /// 一次性迁移：把历史卡片里 TinyURL 短链换回原文里的真实地址。
         /// TinyURL 现在会把老接口生成的短链判成过期，先跳 preview/deprecated 提示页，
-        /// 用户点开要多等几秒。DisplayText 形如 "**标题**\n[锚文本](url)"，
-        /// 真实地址一直在 Text 里，重建一次即可。
+        /// 用户点开要多等几秒。DisplayText 形如 "标题\n[锚文本](url)"
+        /// （v2843 之前是 "**标题**\n…"，两种都要认），真实地址一直在 Text 里，重建一次即可。
         /// </summary>
         public void FixDeprecatedShortLinks()
         {
@@ -1910,13 +1910,16 @@ namespace TempNotes2
                 // 或者上一版改成域名锚文本的）统一重建。
                 if (d.IndexOf("[" + real + "](" + real + ")", StringComparison.Ordinal) >= 0) continue;
 
+                // v2843：标题行不再带 ** 包裹。这里两种格式都要认，
+                // 否则新格式的卡片走到这条路会被抽成空标题、只剩一条光链接。
                 string title = "";
-                int a = d.IndexOf("**", StringComparison.Ordinal);
-                if (a == 0)
-                {
-                    int b = d.IndexOf("**", 2, StringComparison.Ordinal);
-                    if (b > 2) title = d.Substring(2, b - 2);
-                }
+                int nl = d.IndexOf('\n');
+                string head = nl > 0 ? d.Substring(0, nl) : "";
+                if (head.Length > 4 && head.StartsWith("**", StringComparison.Ordinal)
+                    && head.EndsWith("**", StringComparison.Ordinal))
+                    title = head.Substring(2, head.Length - 4);      // 旧格式
+                else if (head.Length > 0 && head.IndexOf("](http", StringComparison.Ordinal) < 0)
+                    title = head;                                     // 新格式：第一行就是标题
 
                 note.DisplayText = WeChatRecord.BuildCardDisplay(title, real);
                 n++;
@@ -1926,6 +1929,65 @@ namespace TempNotes2
                 _store.Save();
                 _log("修正链接卡片 n=" + n);
             }
+        }
+
+        /// <summary>
+        /// v2843 一次性迁移：链接卡标题不再加粗。
+        /// 旧数据形如 "**标题**\n[url](url)"，新格式是 "标题\n[url](url)"；
+        /// 标题就是链接本身时（用户只粘了一个地址）只留链接那一行，不再显示两遍。
+        ///
+        /// 只做「去掉包裹的 **」这一件事，**不重新解析** —— 后台补出来的真标题
+        /// 在 Text 里根本没有，重建会把标题打回成一条光秃秃的 URL。
+        /// 幂等：第一行没有 ** 就跳过，每次启动跑一遍没有副作用。
+        /// </summary>
+        public void NormalizeLinkCardDisplay()
+        {
+            int n = 0;
+            foreach (var note in _store.Db.Notes)
+            {
+                if (note == null) continue;
+                string d = note.DisplayText;
+                if (string.IsNullOrEmpty(d)) continue;
+                if (d.IndexOf("](http", StringComparison.Ordinal) < 0) continue;   // 不是链接卡
+
+                int nl = d.IndexOf('\n');
+                string head = nl > 0 ? d.Substring(0, nl) : d;
+                if (head.Length < 5) continue;
+                if (!head.StartsWith("**", StringComparison.Ordinal)) continue;
+                if (!head.EndsWith("**", StringComparison.Ordinal)) continue;
+
+                string title = head.Substring(2, head.Length - 4);
+                string rest = nl > 0 ? d.Substring(nl) : "";   // 以 \n 开头
+
+                string rebuilt;
+                if (string.IsNullOrEmpty(title) || TitleIsLinkItself(title, d, nl))
+                    rebuilt = rest.Length > 0 ? rest.Substring(1) : "";   // 纯 URL 卡：只留链接行
+                else
+                    rebuilt = title + rest;
+
+                if (rebuilt.Length == 0 || rebuilt == d) continue;
+                note.DisplayText = rebuilt;
+                n++;
+            }
+            if (n > 0)
+            {
+                _store.Save();
+                _log("链接卡标题去粗体 n=" + n);
+            }
+        }
+
+        /// <summary>标题文字是不是就是紧随其后的那条链接地址（纯 URL 卡片）。</summary>
+        private static bool TitleIsLinkItself(string title, string display, int nl)
+        {
+            if (nl <= 0 || nl + 1 >= display.Length) return false;
+            string l2 = display.Substring(nl + 1);
+            int e2 = l2.IndexOf('\n');
+            if (e2 >= 0) l2 = l2.Substring(0, e2);
+            l2 = l2.Trim();
+            int a = l2.IndexOf("](", StringComparison.Ordinal);
+            if (a <= 0 || l2.Length == 0 || l2[0] != '[') return false;
+            string anchor = l2.Substring(1, a - 1);
+            return string.Equals(title, anchor, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>塞进单引号 JS 字符串里：转义反斜杠/引号/换行。</summary>

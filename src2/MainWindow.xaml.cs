@@ -1043,7 +1043,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2842 HEIC/HEIF 图片有缩略图了（WIC 解码兜底），拖入文件后底部那条进度提示也会自动收掉");
+                log("版本 2844 链接卡标题不加粗/纯链接不再重复；自动清掉 OneDrive 同步冲突副本（每次启动都重算那条的根因）");
                 ApplyMinWindowSize();   // 必须在第一次布局之后（Loaded 里）算，DesiredSize 才有效
             _store = new Store();
                 _store.Load();
@@ -1089,6 +1089,8 @@ namespace TempNotes2
 
                 // 一次性把历史卡片里的 TinyURL 短链换回真实地址（TinyURL 会插 deprecated 提示页）
                 try { _bridge.FixDeprecatedShortLinks(); } catch { }
+                // v2843：链接卡标题不再加粗（旧数据去掉包裹的 **，纯 URL 卡只留一行）。幂等。
+                try { _bridge.NormalizeLinkCardDisplay(); } catch { }
 
                 // v2810：数据是「一条笔记一个文件」，改成实时监听目录，不再只等窗口激活。
                 StartDbWatcher(log);

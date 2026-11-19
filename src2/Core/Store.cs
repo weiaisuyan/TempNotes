@@ -98,6 +98,10 @@ namespace TempNotes
             // 启动时修一次失效路径（数据目录搬过家、或从另一台机器同步过来的 notes.json），
             // 否则附件一律显示「文件已被移动或删除」，清空回收站也删不掉实体。
             try { RepairAttachmentPaths(); } catch { }
+            // v2844：清掉 OneDrive 同步冲突副本（<id>-<机器名>.json）。
+            // 必须在 Load 之后：要拿 Load 时建立的墓碑表来判断哪些是已删笔记的孤儿。
+            // 重复副本以前会「读得进内存、永远删不掉」，导致每次启动都重算一遍。
+            try { SweepConflictCopies(); } catch { }
         }
 
         private void EnsureDirs()
@@ -333,6 +337,16 @@ namespace TempNotes
                 Note exist;
                 if (!byId.TryGetValue(n.Id, out exist)) byId[n.Id] = n;
                 else if (n.UpdatedAt > exist.UpdatedAt) byId[n.Id] = n;   // 同 id 多份 = 同步冲突副本，取新的
+                else if (n.UpdatedAt == exist.UpdatedAt)
+                {
+                    // v2844：同一时刻的两份（典型是 OneDrive 把正名和副本都同步下来了），
+                    // 以前谁先被枚举谁赢 —— 目录枚举顺序不稳定，于是「同一份数据每次启动显示不一样」。
+                    // 现在定死：正名文件（<id>.json）优先，副本只在正名缺失时才有资格代表这条笔记。
+                    string existFile = NotePath(exist.Id);
+                    bool mineCanonical = IsCanonicalNoteFile(f, n.Id);
+                    bool existCanonical = File.Exists(existFile) && IsCanonicalNoteFile(existFile, exist.Id);
+                    if (mineCanonical && !existCanonical) byId[n.Id] = n;
+                }
             }
             Db.Notes = byId.Values.ToList();
             Db.Deleted = ReadTombstoneFiles();
@@ -401,6 +415,123 @@ namespace TempNotes
         private string NotePath(string id) { return Path.Combine(NotesDir, id + ".json"); }
         private string TombstonePath(string id) { return Path.Combine(DeletedDir, id + ".json"); }
 
+        /// <summary>
+        /// v2844：从「任意文件名」里认出笔记 id。
+        ///
+        /// 正常文件名是 <id>.json。但 OneDrive 在两端同时改同一个文件时，会把其中一份
+        /// 改名成 <id>-&lt;机器名&gt;.json / <id>-&lt;机器名&gt;-2.json（实测本机出现过
+        /// -xixiaoda、-LAPTOP-4OH5F76B、-3 三种），这些副本以前**读得进内存、却永远删不掉**：
+        /// DeleteNoteFile 只按 <id>.json 删正名，副本留在 notes\ 里成了孤儿，
+        /// 下次启动又被读回来 → 每次都要重新合并/迁移一遍（用户看到的「每次启动都重算一次」）。
+        ///
+        /// 判据必须严格：前 32 位是十六进制、后面要么结束、要么以 - 开头再接任意后缀。
+        /// 这样用户自己起的普通文件名（不是 32 位 hex 开头）一个都不会被误认。
+        /// </summary>
+        private static string IdFromFileName(string path)
+        {
+            try
+            {
+                string name = Path.GetFileNameWithoutExtension(path);
+                if (string.IsNullOrEmpty(name) || name.Length < 32) return null;
+                for (int i = 0; i < 32; i++)
+                {
+                    char c = name[i];
+                    bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                    if (!hex) return null;
+                }
+                if (name.Length == 32) return name;
+                if (name[32] != '-') return null;      // 32 位 hex 之后必须是 - 或结束
+                return name.Substring(0, 32);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>正名文件（<id>.json）才算「这条笔记的家」。副本一律不是。</summary>
+        private static bool IsCanonicalNoteFile(string path, string id)
+        {
+            try { return string.Equals(Path.GetFileName(path), id + ".json", StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// v2844：清掉 notes\ 里的同步冲突副本，返回移走的个数。
+        ///
+        /// 只处理两类，其余一律不动（宁可留垃圾也不误删数据）：
+        ///   ① 该 id 已有墓碑（另一台已删除）→ 副本是孤儿，移进回收站目录；
+        ///   ② 该 id 有正名文件，且副本内容与正名完全相同（updated + 指纹都一致）→ 纯冗余，移走。
+        /// 内容不同又没墓碑的（=两台真的各改了一版）**保留**，并写日志让人工判断，
+        /// 绝不替用户选哪一份。
+        ///
+        /// 移走而不是删除：放进 notes\_conflicts\，随时可以手工还原。
+        /// </summary>
+        public int SweepConflictCopies()
+        {
+            int moved = 0;
+            try
+            {
+                var files = SafeFiles(NotesDir, "*.json");
+                if (files.Count == 0) return 0;
+
+                string keepDir = Path.Combine(NotesDir, "_conflicts");
+                var tombstones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var t in ReadTombstoneFiles())
+                    if (t != null && !string.IsNullOrEmpty(t.Id)) tombstones.Add(t.Id);
+
+                foreach (string f in files)
+                {
+                    string id = IdFromFileName(f);
+                    if (id == null) continue;
+                    if (IsCanonicalNoteFile(f, id)) continue;      // 正名，不动
+
+                    string canon = NotePath(id);
+                    bool hasTomb = tombstones.Contains(id);
+                    bool hasCanon = File.Exists(canon);
+
+                    if (!hasTomb && !hasCanon)
+                    {
+                        // 既没墓碑也没正名 = 这条笔记只剩这一份副本。
+                        // 把它正名（改名成 <id>.json），不能移走 —— 移走等于删掉用户的笔记。
+                        try
+                        {
+                            if (!File.Exists(canon)) File.Move(f, canon);
+                            moved++;
+                            Log("冲突副本已正名 " + Path.GetFileName(f) + " → " + id + ".json");
+                        }
+                        catch (Exception ex) { Log("冲突副本正名失败 " + Path.GetFileName(f) + " " + ex.Message); }
+                        continue;
+                    }
+
+                    bool redundant = false;
+                    if (hasTomb) redundant = true;                  // 已删笔记的孤儿
+                    else if (hasCanon)
+                    {
+                        var a = TryReadNote(f);
+                        var b = TryReadNote(canon);
+                        // 内容一致才算冗余；不一致是两台各改一版，留给人工
+                        if (a != null && b != null && a.UpdatedAt == b.UpdatedAt && Signature(a) == Signature(b))
+                            redundant = true;
+                        else
+                            Log("冲突副本内容不同，保留待人工判断 " + Path.GetFileName(f));
+                    }
+
+                    if (!redundant) continue;
+                    try
+                    {
+                        Directory.CreateDirectory(keepDir);
+                        string dest = Path.Combine(keepDir, Path.GetFileName(f));
+                        if (File.Exists(dest)) dest = Path.Combine(keepDir, Path.GetFileNameWithoutExtension(f) + "-" + DateTime.Now.ToString("HHmmss") + ".json");
+                        File.Move(f, dest);
+                        _seen.Remove(f);
+                        moved++;
+                        Log("冲突副本移出 notes\\ " + Path.GetFileName(f) + (hasTomb ? "（已删笔记的孤儿）" : "（与正名重复）"));
+                    }
+                    catch (Exception ex) { Log("冲突副本移出失败 " + Path.GetFileName(f) + " " + ex.Message); }
+                }
+            }
+            catch (Exception ex) { Log("SweepConflictCopies 失败 " + ex.Message); }
+            return moved;
+        }
+
         private void WriteNoteFile(Note n)
         {
             WriteAtomic(NotePath(n.Id), NoteSer, n);
@@ -408,9 +539,29 @@ namespace TempNotes
             _written[n.Id] = Signature(n);
         }
 
+        /// <summary>
+        /// 删掉某条笔记的文件。v2844 起连**同步冲突副本**一起删。
+        ///
+        /// 旧实现只 File.Delete(<id>.json)，OneDrive 生成的 <id>-&lt;机器名&gt;.json
+        /// 会永远留在 notes\ 里：启动时被读回内存（内存里 id 相同取 updated 新的），
+        /// 但 DeleteNoteFile 又永远找不到它 → 每次启动都要重新走一遍合并/迁移。
+        /// 本机实测就是这样留下 11 个已删笔记的孤儿副本。
+        /// </summary>
         private void DeleteNoteFile(string id)
         {
             try { var p = NotePath(id); if (File.Exists(p)) File.Delete(p); _seen.Remove(p); } catch { }
+            // 同 id 的副本一起清（只匹配 <id>-*.json，不会碰到别的笔记）
+            try
+            {
+                foreach (string f in SafeFiles(NotesDir, id + "-*.json"))
+                {
+                    if (IdFromFileName(f) == null) continue;
+                    if (!string.Equals(IdFromFileName(f), id, StringComparison.OrdinalIgnoreCase)) continue;
+                    try { File.Delete(f); } catch { }
+                    _seen.Remove(f);
+                }
+            }
+            catch { }
             _written.Remove(id);
         }
 
@@ -684,6 +835,15 @@ namespace TempNotes
                     if (mine == null) { Db.Notes.Add(dn); _written[dn.Id] = ""; changed = true; }
                     else if (dn.UpdatedAt > mine.UpdatedAt)
                     {
+                        int idx = Db.Notes.IndexOf(mine);
+                        Db.Notes[idx] = dn;
+                        _written[dn.Id] = "";
+                        changed = true;
+                    }
+                    else if (dn.UpdatedAt == mine.UpdatedAt && IsCanonicalNoteFile(f, dn.Id))
+                    {
+                        // v2844：时间戳相同（OneDrive 把正名和副本一起同步下来的典型情况）时，
+                        // 正名文件有资格覆盖内存里的那份，副本没有 —— 否则结果取决于枚举顺序。
                         int idx = Db.Notes.IndexOf(mine);
                         Db.Notes[idx] = dn;
                         _written[dn.Id] = "";

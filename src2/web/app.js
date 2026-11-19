@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-18-2841";
+var APPJS_VER = "2026-11-19-2844";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -339,9 +339,15 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
        实测一次能泄漏出几十个 <i>，附件块因此被挤成行内宽度、缩略图跑到卡片外。 */
     function inline(x) {
       var urls = [];
-      x = x.replace(/https?:\/\/[^\s"'<>)\]]+/g, function (m) {
+      /* v2843：URL 的字符集里必须排除 `*`。
+         以前 `**https://…**` 这一行（链接卡的标题行）会把 URL 后面那对 `**`
+         一起吞进占位符，粗体规则拿到时已经不成对 ⇒ 星号原样显示、也不加粗。
+         `*` 在未编码的 URL 里本来就不合法，排除它零风险。
+         `~` 仍然允许（`https://…/~user/` 是真实存在的写法），
+         只把结尾的 `~` 当作强调标记退回给后面的删除线规则。 */
+      x = x.replace(/https?:\/\/[^\s"'<>)\]*]+/g, function (m) {
         var tail = "";
-        var mt = /[.,;:!?。，；：！？]+$/.exec(m);
+        var mt = /[.,;:!?。，；：！？~]+$/.exec(m);
         if (mt) { tail = mt[0]; m = m.slice(0, m.length - tail.length); }
         var k = "\u0001" + urls.length + "\u0001";
         urls.push(m);
@@ -1777,6 +1783,7 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
   var _dragFileCount = 1;
   var _dragHintShown = false;   // 一轮拖拽只提示一次「松开后开始导入」
   var _upCount = 0, _upFinished = 0;   // 这一批拖入几个文件、已完成几个（进度条阶段 2→3）
+  var _upChatZip = false;  // 这一批里有没有微信聊天记录包：那条路的进度由 C# 逐条回报、自己收尾
 var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还是文字/链接
   var _topScrollRaf = 0;
   var _wheelTarget = 0;      // 热区转发的滚轮：累计目标位置
@@ -5348,14 +5355,27 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     shelfIdle();
     _upFinished++;
     if (_upCount > 0 && _upFinished >= _upCount) {
-      // 传完了，接下来是 C# 解压 + 建待办：真实条数由 C# 的 progStage(3,…) 逐条回报
-      progShow("③ 正在解压并建立待办", "共 " + _upCount + " 个文件", null);
-      _upCount = 0; _upFinished = 0;
+      var batchN = _upCount, isChat = _upChatZip;
+      _upCount = 0; _upFinished = 0; _upChatZip = false;
+      if (isChat) {
+        // 微信聊天记录包：C# 拿到文件后开始解压拆条，会在这条提示上按真实条数回报，
+        // 拆完自己发 progStage(0) 收掉（见 Bridge.UpBatchStep）。这里只管先把话说明白。
+        progShow("③ 正在解压并建立待办", "正在解析聊天记录…", null);
+      } else {
+        // 普通文件：传完这一步就已经落盘、挂成附件了，没有解压环节。
+        // 以前这里挂「③ 正在解压并建立待办 共 N 个文件」之后就再没人收，
+        // 提示会一直赖在底部（2026-11-19 用户反馈）。
+        progShow("已保存", batchN > 1 ? ("共 " + batchN + " 个附件") : "附件已加入", 100);
+        progHide(800);
+      }
     }
   }
 
   function startUpload(file, targetId, tile) {
     var token = "u" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    // 微信「多选消息 → 拖出」生成的是 聊天记录_20261119_110916.zip（C# 的 WeChatRecord.NameRx 同一套规则）。
+    // 只有这类包才需要「正在解压并建立待办」那句话，别的文件传完就结束了。
+    try { if (/^聊天记录[_-]?\d{8}[_-]\d{6}\.zip$/i.test(String(file.name || ""))) _upChatZip = true; } catch (e0) { }
     _uploads[token] = { tile: tile, name: file.name, size: file.size, done: false };
     var name = String(file.name || "file").replace(/[|\r\n]/g, "_");
     send("upbegin|" + token + "|" + targetId + "|" + name + "|" + file.size);
@@ -5492,7 +5512,7 @@ var _dragKind = "file";   // "file" | "text"：这一轮拖进来的是文件还
     // 先说这一批有几个：C# 收齐之前不重渲染，否则同批没传完的卡片会被冲掉
     var _bt = 0;
     for (var bi = 0; bi < files.length; bi++) _bt += (files[bi].size || 0);
-    _upCount = files.length; _upFinished = 0;
+    _upCount = files.length; _upFinished = 0; _upChatZip = false;
     progShow("② 正在传输", "0 MB / " + fmtMB(_bt), 0);
     try { send("upbatch|" + files.length); } catch (e11) { }
     for (var j = 0; j < files.length; j++) startUpload(files[j], target, tiles[j]);

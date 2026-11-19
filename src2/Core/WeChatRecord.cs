@@ -271,8 +271,9 @@ namespace TempNotes
                 return BuildCardDisplay(msg.TitleSeed, clean);
             }
             // 只有标题（B站/小程序卡片）：首屏只能先显示标题，链接等后台解析。
+            // v2843：标题不再加粗，与 BuildCardDisplay 保持一致。
             if (msg.TitleOnly && !string.IsNullOrEmpty(msg.TitleSeed))
-                return "**" + LinkResolver.CleanTitle(msg.TitleSeed).Replace("**", "＊") + "**";
+                return LinkResolver.CleanTitle(msg.TitleSeed).Replace("**", "＊");
             return msg.RawText;
         }
 
@@ -326,8 +327,8 @@ namespace TempNotes
         }
 
         /// <summary>
-        /// 卡片正文：标题加粗一行，第二行直接放可点击的链接（用户要的就是这个，
-        /// 不要“打开公众号文章/打开微博”这种没信息量的文案）。
+        /// 卡片正文：标题一行（**不加粗**，v2843 用户要求），第二行直接放可点击的链接
+        /// （用户要的就是这个，不要“打开公众号文章/打开微博”这种没信息量的文案）。
         /// 由后台线程在解析完标题后调用。
         /// </summary>
         public static string BuildCardDisplay(string title, string url)
@@ -342,7 +343,13 @@ namespace TempNotes
             // preview/deprecated 提示页，点开要多等几秒。
             string link = "[" + url + "](" + url + ")";
             if (title.Length == 0) return link;
-            return "**" + title.Replace("**", "＊") + "**\n" + link;
+
+            // v2843：标题不再加粗。顺带修掉「纯 URL 卡片显示两遍」——
+            // 标题就是链接本身时（用户只粘了一个地址），只留链接那一行。
+            if (string.Equals(title, url, StringComparison.OrdinalIgnoreCase)) return link;
+
+            // 标题里残留的 ** 仍然转成全角，免得被 Markdown 当成粗体标记撕开
+            return title.Replace("**", "＊") + "\n" + link;
         }
 
         internal static string CleanShareTitle(string before, string url)

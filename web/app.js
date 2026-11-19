@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-var APPJS_VER = "2026-11-19-2842";
+var APPJS_VER = "2026-11-19-2844";
   window.__appjsVer = APPJS_VER;
 
   /* ---------- DOM ---------- */
@@ -339,9 +339,15 @@ var settings = { palette: 9, topmost: false, autoStart: false, rightDone: true, 
        实测一次能泄漏出几十个 <i>，附件块因此被挤成行内宽度、缩略图跑到卡片外。 */
     function inline(x) {
       var urls = [];
-      x = x.replace(/https?:\/\/[^\s"'<>)\]]+/g, function (m) {
+      /* v2843：URL 的字符集里必须排除 `*`。
+         以前 `**https://…**` 这一行（链接卡的标题行）会把 URL 后面那对 `**`
+         一起吞进占位符，粗体规则拿到时已经不成对 ⇒ 星号原样显示、也不加粗。
+         `*` 在未编码的 URL 里本来就不合法，排除它零风险。
+         `~` 仍然允许（`https://…/~user/` 是真实存在的写法），
+         只把结尾的 `~` 当作强调标记退回给后面的删除线规则。 */
+      x = x.replace(/https?:\/\/[^\s"'<>)\]*]+/g, function (m) {
         var tail = "";
-        var mt = /[.,;:!?。，；：！？]+$/.exec(m);
+        var mt = /[.,;:!?。，；：！？~]+$/.exec(m);
         if (mt) { tail = mt[0]; m = m.slice(0, m.length - tail.length); }
         var k = "\u0001" + urls.length + "\u0001";
         urls.push(m);
