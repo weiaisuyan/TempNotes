@@ -10,6 +10,8 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using TempNotes;
 
 namespace TempNotes2
@@ -616,7 +618,10 @@ namespace TempNotes2
                 pinned = n.Pinned,
                 atts = (n.Attachments ?? new List<Attachment>()).Select(a =>
                 {
-                    bool wantsThumb = a.Kind == "image" || a.Kind == "video";
+                    // 老数据里 HEIC/HEIF 曾被存成 "file"（当时扩展名表里没有它们），
+                    // 这里按扩展名再判一次，不然升级后那些附件还是文件图标。
+                    string kind = EffectiveKind(a);
+                    bool wantsThumb = kind == "image" || kind == "video";
                     string thumb = ThumbUrl(a);
                     // 缺图时先让页面显示内置类型图标，缩略图在后台串行生成；
                     // 生成完只替换对应附件，不再让 UI 线程等图片解码。
@@ -624,7 +629,7 @@ namespace TempNotes2
                     return new AttDto
                     {
                         id = a.Id,
-                        kind = a.Kind ?? "file",
+                        kind = kind,
                         name = a.OrigName ?? "",
                         size = a.Size,
                         thumb = thumb,
@@ -759,7 +764,7 @@ namespace TempNotes2
         private const int SIIGBF_BIGGERSIZEOK = 0x1;
         private const int SIIGBF_THUMBNAILONLY = 0x8;
 
-        private bool MakeShellThumb(Attachment a, int px, bool thumbnailOnly = true)
+        private bool MakeShellThumb(Attachment a, int px, bool thumbnailOnly = true, string what = "视频")
         {
             try
             {
@@ -778,13 +783,13 @@ namespace TempNotes2
                         flags, out hbm);
                     if (hr != 0 || hbm == IntPtr.Zero)
                     {
-                        _log("视频缩略图失败 hr=" + hr + (thumbnailOnly ? "(仅缩略图)" : "(含图标)") + " " + a.OrigName);
+                        _log(what + "缩略图失败 hr=" + hr + (thumbnailOnly ? "(仅缩略图)" : "(含图标)") + " " + a.OrigName);
                         return false;
                     }
                     Directory.CreateDirectory(_store.ThumbDir);
                     using (var bmp = System.Drawing.Bitmap.FromHbitmap(hbm))
                         bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
-                    _log("视频缩略图已生成 " + a.OrigName);
+                    _log(what + "缩略图已生成 " + a.OrigName);
                     return true;
                 }
                 finally
@@ -793,7 +798,7 @@ namespace TempNotes2
                     try { Marshal.ReleaseComObject(f); } catch { }
                 }
             }
-            catch (Exception ex) { _log("视频缩略图异常 " + ex.Message); return false; }
+            catch (Exception ex) { _log(what + "缩略图异常 " + ex.Message); return false; }
         }
 
         /// <summary>
@@ -1608,6 +1613,10 @@ namespace TempNotes2
             _upThumbPending.Clear();
             PushAll();
             foreach (var a in done) QueueThumb(a);
+            // 这一批到此为止：把页面底部那条进度收掉。
+            // 以前只有「微信聊天记录拆条」那条路会自己收，普通文件 / 拆条结束都没人收，
+            // 提示就一直挂在最下面（2026-11-19 用户反馈）。
+            try { _eval("window.api.progStage&&window.api.progStage(0);"); } catch { }
             if (done.Count > 0) Hint(done.Count > 1 ? ("已加入 " + done.Count + " 个文件") : "已加入文件");
         }
 
@@ -2050,18 +2059,47 @@ namespace TempNotes2
                     MakeShellThumb(a, 256, false);
                     return;
                 }
-                if (a.Kind != "image") return;
+                if (a.Kind != "image" && EffectiveKind(a) != "image") return;
                 if (string.IsNullOrEmpty(a.StoredPath) || !File.Exists(a.StoredPath)) return;
 
                 string outPath = ThumbPathV2(a);
                 Directory.CreateDirectory(Path.GetDirectoryName(outPath));
 
-                using (var src = System.Drawing.Image.FromFile(a.StoredPath))
+                // ① 常规图片走 GDI+：jpg/png/gif/bmp/webp 它都认，速度也最快。
+                if (MakeGdiThumb(a.StoredPath, outPath, 256))
+                {
+                    _log("缩略图已生成 " + a.OrigName);
+                    return;
+                }
+                // ② GDI+ 不认的（iPhone 的 .heic/.heif、.avif）走 WIC。
+                //    这些格式的解码器是系统装的（HEIF 图像扩展），它注册在 WIC 上，
+                //    GDI+ 那边根本没有入口——所以以前 .heic 只能落成文件图标。
+                if (MakeWicThumb(a.StoredPath, outPath, 256))
+                {
+                    _log("缩略图已生成(WIC) " + a.OrigName);
+                    return;
+                }
+                // ③ 最后交给系统缩略图提供程序（和资源管理器里看到的那张同一来源）。
+                if (MakeShellThumb(a, 256, true, "图片"))
+                {
+                    _log("缩略图已生成(系统) " + a.OrigName);
+                    return;
+                }
+                _log("缩略图未生成 " + a.OrigName);
+            }
+            catch (Exception ex) { _log("缩略图失败 " + ex.Message); }
+        }
+
+        /// <summary>GDI+ 缩略图：常规位图格式。失败不抛，交给上层换通路。</summary>
+        private bool MakeGdiThumb(string srcPath, string outPath, int box)
+        {
+            try
+            {
+                using (var src = System.Drawing.Image.FromFile(srcPath))
                 {
                     // 显示尺寸 78px，Windows 150% 缩放后需要 117 个物理像素；
                     // 留到 256 是为了高分屏和以后放大显示都不糊。
-                    const int BOX = 256;
-                    double scale = Math.Min((double)BOX / src.Width, (double)BOX / src.Height);
+                    double scale = Math.Min((double)box / src.Width, (double)box / src.Height);
                     int w = Math.Max(1, (int)Math.Round(src.Width * scale));
                     int h = Math.Max(1, (int)Math.Round(src.Height * scale));
                     using (var bmp = new System.Drawing.Bitmap(w, h))
@@ -2073,17 +2111,102 @@ namespace TempNotes2
                         bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
                     }
                 }
-                _log("缩略图已生成 " + a.OrigName);
+                return new FileInfo(outPath).Length > 0;
             }
-            catch (Exception ex) { _log("缩略图失败 " + ex.Message); }
+            catch (Exception ex)
+            {
+                // HEIC/AVIF 一定会走到这里（GDI+ 报“内存不足”），属正常分支，日志留一行备查。
+                _log("GDI+ 缩略图跳过 " + Path.GetFileName(srcPath) + " : " + ex.Message);
+                try { if (File.Exists(outPath)) File.Delete(outPath); } catch { }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// WIC 缩略图：HEIC / HEIF / AVIF 这类 GDI+ 不认、但 Windows 自己装了解码器的格式。
+        /// WPF 的 BitmapDecoder 就是 WIC 的托管包装，所以不用引任何第三方库。
+        /// </summary>
+        private bool MakeWicThumb(string srcPath, string outPath, int box)
+        {
+            try
+            {
+                BitmapSource src;
+                using (var fs = new FileStream(srcPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    var dec = BitmapDecoder.Create(fs, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+                    if (dec.Frames.Count == 0) return false;
+                    src = dec.Frames[0];
+
+                    // iPhone 拍的 HEIC 常见「像素横着存 + EXIF 方向标记」，不摆正就横躺着。
+                    var tf = OrientationTransform(ReadOrientation(dec.Frames[0]));
+                    if (tf != null) src = new TransformedBitmap(src, tf);
+                }
+
+                if (src.CanFreeze) src.Freeze();
+
+                double scale = Math.Min((double)box / src.PixelWidth, (double)box / src.PixelHeight);
+                if (scale > 0 && scale < 1)
+                    src = new TransformedBitmap(src, new ScaleTransform(scale, scale));
+
+                var enc = new PngBitmapEncoder();
+                enc.Frames.Add(BitmapFrame.Create(src));
+                using (var outFs = File.Create(outPath)) enc.Save(outFs);
+                return new FileInfo(outPath).Length > 0;
+            }
+            catch (Exception ex)
+            {
+                _log("WIC 缩略图失败 " + Path.GetFileName(srcPath) + " : " + ex.Message);
+                try { if (File.Exists(outPath)) File.Delete(outPath); } catch { }
+                return false;
+            }
+        }
+
+        /// <summary>读 EXIF 方向（1=正；3=180°；6=顺时针 90°；8=顺时针 270°）。</summary>
+        private static int ReadOrientation(BitmapFrame frame)
+        {
+            try
+            {
+                var md = frame.Metadata as BitmapMetadata;
+                if (md == null) return 1;
+                object o = md.GetQuery("System.Photo.Orientation");
+                if (o is ushort) return (ushort)o;
+                if (o is byte) return (byte)o;
+            }
+            catch { }
+            return 1;
+        }
+
+        /// <summary>方向 → 旋转变换；不支持的方向（镜像类）按原样输出，不会崩。</summary>
+        private static Transform OrientationTransform(int orientation)
+        {
+            switch (orientation)
+            {
+                case 3: return new RotateTransform(180);
+                case 6: return new RotateTransform(90);
+                case 8: return new RotateTransform(270);
+                default: return null;
+            }
         }
 
         private static string GuessKind(string name)
         {
             string e = (Path.GetExtension(name) ?? "").ToLowerInvariant();
-            if (e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".gif" || e == ".bmp" || e == ".webp") return "image";
+            if (e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".gif" || e == ".bmp" || e == ".webp"
+                || e == ".heic" || e == ".heif" || e == ".avif") return "image";
             if (e == ".mp4" || e == ".mov" || e == ".avi" || e == ".mkv" || e == ".webm") return "video";
             return "file";
+        }
+
+        /// <summary>
+        /// 附件的「有效类型」：老数据里 HEIC/HEIF 被存成 "file"（当时的扩展名表里没有它们），
+        /// 这里按扩展名补判一次。只把 file 升级成 image，其它一律保持原值，不动已有数据。
+        /// </summary>
+        private static string EffectiveKind(Attachment a)
+        {
+            if (a == null) return "file";
+            string k = a.Kind ?? "file";
+            if (k == "image" || k == "video") return k;
+            return GuessKind(a.OrigName ?? "") == "image" ? "image" : k;
         }
 
         private readonly object _clipLock = new object();
