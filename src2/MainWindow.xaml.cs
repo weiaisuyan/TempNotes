@@ -1043,7 +1043,7 @@ namespace TempNotes2
                 Store.LogSink = log;
                 EnsureCaptionStyle();   // SourceInitialized 时日志还没接上，这里再补一次并留下记录
                 InstallMessageLog();    // 只在带 --msglog 时生效
-                log("版本 2844 链接卡标题不加粗/纯链接不再重复；自动清掉 OneDrive 同步冲突副本（每次启动都重算那条的根因）");
+                log("版本 2845 两端数据不一致的根因修复：拉取后不再回写同一份（去写放大）/ 运行期也清冲突副本 / 内容不同的副本按 updated 归一（旧的留档进 notes\\_conflicts）");
                 ApplyMinWindowSize();   // 必须在第一次布局之后（Loaded 里）算，DesiredSize 才有效
             _store = new Store();
                 _store.Load();

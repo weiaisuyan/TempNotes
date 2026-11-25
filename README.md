@@ -76,6 +76,25 @@ settings.json       配色、置顶、开机自启等
 
 ## 版本记录
 
+- **v2845**（2026-11-25）**两端数据不一致的根因修复**。只改 `Core/Store.cs` + 一行启动 banner，**前端零改动**（exe 与 v2844 的差别就在这三处 + banner）。
+  现象：笔记本和台式机共用同一个 OneDrive 数据目录，两端显示的数据对不上（同一条笔记一边有附件一边没有、一边已完成一边未完成），
+  `notes\` 里反复出现 `<id>-<机器名>.json` 冲突副本。
+  ① **拉取后回写同一份 = 写放大（主因）**。`PullFromDiskCore` 采用磁盘上的版本时把 `_written[id]` 置成 `""`，
+     紧接着 `WriteChanged()` 就把刚读到的文件原样重写一遍（内容与 `updated` 都没变，只有 mtime 变了）。
+     两端同时开着就成了「A 读→写→同步→B 读→写→同步」的循环，OneDrive 没法合并，只能生成冲突副本。
+     现在采用磁盘版本时记 `_written[id] = Signature(dn)`（与 `Load()` 的做法一致）—— 读进来的东西不再写回去。
+  ② **清扫只在启动时跑**。v2844 的 `SweepConflictCopies()` 只在 `Store` 构造时调一次，运行中同步下来的副本要等下次启动。
+     现在 `PullFromDisk()`（窗口激活 / 文件监听 / 每秒轮询）都先扫一遍再拉；并加了快路径（没有任何非正名文件就直接 return），
+     不会每秒去读两百多个墓碑文件。
+  ③ **内容不同的副本改为按 `updated` 归一**（**推翻 v2844 的「一律保留、留待人工判断」**）。以前两台各改一版时两份长期并存：
+     内存里按 `updated` 谁新谁赢、磁盘上却两份都在，两端各自显示自己那份。现在副本更新就顶成正名，
+     旧正名整份复制进 `notes\_conflicts\<id>-superseded-<时间>-<机器名>.json` 留档（不删、可还原）；
+     副本更旧就原样移进 `_conflicts\`。顺序严格是「先留档成功、再覆盖正名」，留档失败就放弃这次归一。
+  实测：① 升级即把 `33eef8fa…-xixiaoda.json`、`49d1eff9…-xixiaoda.json` 两份移出 notes，
+  `Store 载入，笔记 66 条`（此前 notes 里 68 个文件，含这两份副本）；② 只改 mtime、不改内容模拟「另一端同步下来」→
+  程序合并并重绘（`检测到数据目录变化：已合并并重绘（66 条）`），但**该文件没有被回写**（mtime 与 md5 原样）；
+  ③ 两端升级后都载入 66 条。
+  ⚠️ 冲突副本只归档不删除；要回滚某条，把 `_conflicts\` 里那份改名回 `<id>.json` 即可。
 - **v2844**（2026-11-19）修链接卡的三个显示问题 + 根治「每次启动都重算一遍」。
   ① **链接卡标题不再加粗**（用户要求）。`BuildCardDisplay` 输出从 `**标题**\n[url](url)` 改成 `标题\n[url](url)`；
      纯文字标题卡（B站/小程序那种只有标题的）同步去掉包裹的 `**`。
@@ -185,12 +204,14 @@ settings.json       配色、置顶、开机自启等
    `POST /repos/weiaisuyan/TempNotes/releases`（`tag_name`、`name` 写「随记 v<版本号>」、`body` 写本版说明、最新那版带 `make_latest=true`），
    再 `POST https://uploads.github.com/repos/weiaisuyan/TempNotes/releases/<id>/assets?name=TempNotes-<版本号>-win-x64.zip` 传包。
    **只 push tag 不建 Release，网页 Releases 就会一直停在旧版本**（2026-11-10 就因此停在 v2795，用户发现后才补）。
-8. 两端安装最新版：笔记本 `D:\程序\TempNotes`、台式机 `E:\程序\TempNotes`，装前备份 `随记.exe` 与 `web`。
+8. 两端安装最新版：笔记本 `D:\程序\TempNotes`、台式机 `C:\Users\weiai\AppData\Local\Programs\TempNotes`，装前备份 `随记.exe` 与 `web`。
 
 ## 已知限制
 
 - 双机同用一个目录时，如果两边**同时**编辑同一条笔记，仍是"后写覆盖先写"（按 `updated` 取新）。
-  真要长期双机并行，建议换 Syncthing（会生成 `*.sync-conflict` 副本，不互相覆盖）。
+  v2845 起不会再让这种差异长期留在磁盘上：OneDrive 生成的 `<id>-<机器名>.json` 会在运行期被扫掉，
+  按 `updated` 归一（新的顶成正名、旧的整份留档进 `notes\_conflicts\`），两端下一轮拉取就一致了。
+  真要长期双机**并行写**，还是建议换 Syncthing（会生成 `*.sync-conflict` 副本，不互相覆盖）。
 - **同步速度的下限在 OneDrive 和网速，不在程序**：程序侧检出并上屏是 20–30ms，但 OneDrive 把文件从一台传到另一台
   实测约 5 秒。要更快只能换同步方式（Syncthing / 局域网共享 / 只用一台）。
 - **剪贴板被别的程序独占时，复制/剪切会失败**：典型是网易 UU 远程开着「剪贴板同步」（窗口类 `UURemoteClipboard`），

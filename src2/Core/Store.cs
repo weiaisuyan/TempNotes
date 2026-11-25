@@ -454,13 +454,15 @@ namespace TempNotes
         }
 
         /// <summary>
-        /// v2844：清掉 notes\ 里的同步冲突副本，返回移走的个数。
+        /// 清掉 notes\ 里的同步冲突副本，返回处理掉的个数。
         ///
-        /// 只处理两类，其余一律不动（宁可留垃圾也不误删数据）：
-        ///   ① 该 id 已有墓碑（另一台已删除）→ 副本是孤儿，移进回收站目录；
-        ///   ② 该 id 有正名文件，且副本内容与正名完全相同（updated + 指纹都一致）→ 纯冗余，移走。
-        /// 内容不同又没墓碑的（=两台真的各改了一版）**保留**，并写日志让人工判断，
-        /// 绝不替用户选哪一份。
+        /// 处理三类：
+        ///   ① 该 id 已有墓碑（另一台已删除）→ 副本是孤儿，移进 notes\_conflicts\；
+        ///   ② 该 id 有正名文件、内容也完全一样 → 纯冗余，移进 notes\_conflicts\；
+        ///   ③ 该 id 有正名文件、内容不一样（= 两台真的各改了一版）→ v2845 起按 UpdatedAt 归一：
+        ///      新的那份成为正名，旧的那份整份留档进 notes\_conflicts\（不删，随时能翻回来）。
+        ///      以前这里是「保留待人工判断」，结果同 id 两份长期并存：内存里按 updated 谁新谁赢、
+        ///      磁盘上却两份都在，两台各自显示不同的那一版 —— 就是用户看到的「两端数据不一样」。
         ///
         /// 移走而不是删除：放进 notes\_conflicts\，随时可以手工还原。
         /// </summary>
@@ -471,6 +473,16 @@ namespace TempNotes
             {
                 var files = SafeFiles(NotesDir, "*.json");
                 if (files.Count == 0) return 0;
+
+                // 快路径：一条冲突副本都没有就直接返回，不要每轮都去读两百多个墓碑文件。
+                // v2845 起 PullFromDisk() 每秒都会调一次这里，这一步必须是纯字符串判断。
+                bool anyCopy = false;
+                foreach (string f in files)
+                {
+                    string fid = IdFromFileName(f);
+                    if (fid != null && !IsCanonicalNoteFile(f, fid)) { anyCopy = true; break; }
+                }
+                if (!anyCopy) return 0;
 
                 string keepDir = Path.Combine(NotesDir, "_conflicts");
                 var tombstones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -502,16 +514,55 @@ namespace TempNotes
                     }
 
                     bool redundant = false;
+                    bool promote = false;
+                    string why = hasTomb ? "（已删笔记的孤儿）" : "（正名更新，旧版留档）";
+
                     if (hasTomb) redundant = true;                  // 已删笔记的孤儿
                     else if (hasCanon)
                     {
-                        var a = TryReadNote(f);
-                        var b = TryReadNote(canon);
-                        // 内容一致才算冗余；不一致是两台各改一版，留给人工
-                        if (a != null && b != null && a.UpdatedAt == b.UpdatedAt && Signature(a) == Signature(b))
-                            redundant = true;
+                        var a = TryReadNote(f);       // 副本
+                        var b = TryReadNote(canon);   // 正名
+                        if (a == null || b == null)
+                        {
+                            // 有一份读不出来（正在同步 / 半写状态），这轮别动，下次再来
+                            Log("冲突副本暂不可读，跳过 " + Path.GetFileName(f));
+                            continue;
+                        }
+                        if (a.UpdatedAt == b.UpdatedAt && Signature(a) == Signature(b))
+                        {
+                            redundant = true;                         // 内容完全一致 = 纯冗余
+                            why = "（与正名完全一致）";
+                        }
+                        else if (a.UpdatedAt > b.UpdatedAt)
+                            promote = true;                           // 副本更新 → 归一：副本顶成正名
                         else
-                            Log("冲突副本内容不同，保留待人工判断 " + Path.GetFileName(f));
+                            redundant = true;                         // 正名更新 → 副本留档
+                    }
+
+                    if (promote)
+                    {
+                        // v2845：旧正名先整份复制进 _conflicts\ 并校验，再用副本覆盖正名。
+                        // 顺序不能反 —— 先动正名再失败，就等于把用户最新的那份弄丢了。
+                        try
+                        {
+                            Directory.CreateDirectory(keepDir);
+                            string keepPath = Path.Combine(keepDir,
+                                id + "-superseded-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + ReadMachineTag(f) + ".json");
+                            File.Copy(canon, keepPath, true);
+                            if (!File.Exists(keepPath) || new FileInfo(keepPath).Length == 0)
+                            {
+                                Log("冲突副本归一放弃（旧版留档失败） " + Path.GetFileName(f));
+                                continue;
+                            }
+                            File.Copy(f, canon, true);
+                            File.Delete(f);
+                            _seen.Remove(canon);       // 正名内容换了，强制下一轮重读
+                            _seen.Remove(f);
+                            moved++;
+                            Log("冲突副本更新，已顶成正名并留档旧版 " + Path.GetFileName(f) + " → " + Path.GetFileName(keepPath));
+                        }
+                        catch (Exception ex) { Log("冲突副本归一失败 " + Path.GetFileName(f) + " " + ex.Message); }
+                        continue;
                     }
 
                     if (!redundant) continue;
@@ -523,13 +574,30 @@ namespace TempNotes
                         File.Move(f, dest);
                         _seen.Remove(f);
                         moved++;
-                        Log("冲突副本移出 notes\\ " + Path.GetFileName(f) + (hasTomb ? "（已删笔记的孤儿）" : "（与正名重复）"));
+                        Log("冲突副本移出 notes\\ " + Path.GetFileName(f) + why);
                     }
                     catch (Exception ex) { Log("冲突副本移出失败 " + Path.GetFileName(f) + " " + ex.Message); }
                 }
             }
             catch (Exception ex) { Log("SweepConflictCopies 失败 " + ex.Message); }
             return moved;
+        }
+
+        /// <summary>副本文件名里 &lt;id&gt;- 后面那截（机器名 / 序号），只用来给留档文件起个能对照的名字。</summary>
+        private static string ReadMachineTag(string path)
+        {
+            try
+            {
+                string name = Path.GetFileNameWithoutExtension(path);
+                if (name == null || name.Length <= 33) return "copy";
+                string tag = name.Substring(33);
+                if (tag.Length > 24) tag = tag.Substring(0, 24);
+                var sb = new StringBuilder(tag.Length);
+                foreach (char c in tag)
+                    sb.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_');
+                return sb.Length == 0 ? "copy" : sb.ToString();
+            }
+            catch { return "copy"; }
         }
 
         private void WriteNoteFile(Note n)
@@ -832,12 +900,17 @@ namespace TempNotes
                     for (int i = 0; i < Db.Notes.Count; i++)
                         if (string.Equals(Db.Notes[i].Id, dn.Id, StringComparison.OrdinalIgnoreCase)) { mine = Db.Notes[i]; break; }
 
-                    if (mine == null) { Db.Notes.Add(dn); _written[dn.Id] = ""; changed = true; }
+                    // v2845：采用磁盘上的版本时，把 _written 记成「与磁盘一致」，绝不再写一遍。
+                    // 旧代码在这里置 ""，于是 PullFromDisk() 末尾的 WriteChanged() 会把刚读到的那份
+                    // 原样重写一次（内容和 updated 都没变，只是 mtime 变了）。两台同时开着时就成了
+                    // 「A 读→写→同步→B 读→写→同步」的写放大：OneDrive 看到两边都在改同一个文件，
+                    // 只能生成 <id>-<机器名>.json 冲突副本，用户看到的就是「两端数据不一样」。
+                    if (mine == null) { Db.Notes.Add(dn); _written[dn.Id] = Signature(dn); changed = true; }
                     else if (dn.UpdatedAt > mine.UpdatedAt)
                     {
                         int idx = Db.Notes.IndexOf(mine);
                         Db.Notes[idx] = dn;
-                        _written[dn.Id] = "";
+                        _written[dn.Id] = Signature(dn);
                         changed = true;
                     }
                     else if (dn.UpdatedAt == mine.UpdatedAt && IsCanonicalNoteFile(f, dn.Id))
@@ -846,7 +919,7 @@ namespace TempNotes
                         // 正名文件有资格覆盖内存里的那份，副本没有 —— 否则结果取决于枚举顺序。
                         int idx = Db.Notes.IndexOf(mine);
                         Db.Notes[idx] = dn;
-                        _written[dn.Id] = "";
+                        _written[dn.Id] = Signature(dn);
                         changed = true;
                     }
                 }
@@ -880,6 +953,10 @@ namespace TempNotes
         public bool PullFromDisk()
         {
             bool changed;
+            // v2845：运行期也清冲突副本。以前只在 Store 构造时扫一次，运行中同步下来的
+            // <id>-<机器名>.json 要等到下次启动才处理 —— 中间这段时间两份同 id 并存。
+            // 归一出来的新版会被紧随其后的 PullFromDiskCore 在同一轮里读进内存。
+            try { SweepConflictCopies(); } catch { }
             try { changed = PullFromDiskCore(true); } catch { return false; }
             return changed;
         }
